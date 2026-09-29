@@ -15,6 +15,8 @@ Pre-build. The contract is written; neither track has run.
 - `docs/BUILD_SPEC.md` — the contract both blind tracks build against. Authoritative.
 - `docs/SCENARIO_PLAN.md` — Track A instructions: scenarios, hand-derived sealed expectations, pre-registered hypotheses.
 - `docs/TRACK_SEPARATION_PROTOCOL.md` — chain of custody keeping the two tracks blind.
+- `docs/SPEC_AUDIT.md` — pre-seal contradiction pass over the contract.
+- `docs/AMENDMENTS.md` — every change to the contract, with the finding it resolves.
 
 ## Method
 
