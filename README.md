@@ -17,6 +17,7 @@ Any success-rate number in `out/report.md` is measured against the project's own
   - **10,165 / 10,335 expected fields matched (98.4%).**
 - **Classification:** 0 gate bugs, 1 expectation error, 2 spec ambiguities. See `docs/CONTRADICTIONS.md`.
 - **Run 2:** the same code against corrected expectations v2, with lineage. 10,185 / 10,335; the rest await contract v0.1.
+- **Contract v0.1** (amendment A2, post-reveal): resolves every v0 contradiction and latent divergence, and pins the clauses both tracks flagged. It adds model-family independence and the custody lessons to the protocol. A fresh blind two-track run on v0.1 is pending.
 
 ## Quickstart
 

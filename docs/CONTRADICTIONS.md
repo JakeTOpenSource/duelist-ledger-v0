@@ -99,6 +99,9 @@ Two blind readers, working only from the spec, converged on the same weak clause
 - **C2:** a HOLD whose reasons need different resolvers is settled reason group by reason group, and the strictest resolver governs. A per-action approval never lifts a session-scope or org-scope restriction.
 
 ## Open items for contract v0.1 (amendment A2, post-reveal)
+
+All of these are addressed in amendment A2 (contract v0.1); see `docs/AMENDMENTS.md`, items 1–23. The list below is kept as the original record.
+
 1. Write the C1 and C2 decisions into BUILD_SPEC sec. 12 and sec. 5.1.
 2. Pin L1 and L2, and add scenarios that discriminate between the readings.
 3. Fill the pre-classifier gaps. Recommended: injected H1/H2/H7 → injection-suspected when the failing value is tainted; T4 → sensor-fault.
