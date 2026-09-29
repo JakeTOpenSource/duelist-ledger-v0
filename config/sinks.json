@@ -1,0 +1,11 @@
+{
+ "read_inbox":      {"sink_class": "READ_EXTERNAL",    "rev": "R0", "persistent": false, "guarded": [],                  "content": [],                "attach": [],         "dest_slot": null,     "numeric": [],         "base_tier": 0},
+ "read_file":       {"sink_class": "READ_INTERNAL",    "rev": "R0", "persistent": false, "guarded": ["path"],            "content": [],                "attach": [],         "dest_slot": null,     "numeric": [],         "base_tier": 0},
+ "fetch_web":       {"sink_class": "READ_EXTERNAL",    "rev": "R0", "persistent": false, "guarded": ["url"],             "content": [],                "attach": [],         "dest_slot": null,     "numeric": [],         "base_tier": 0},
+ "read_memory":     {"sink_class": "READ_INTERNAL",    "rev": "R0", "persistent": false, "guarded": ["key"],             "content": [],                "attach": [],         "dest_slot": null,     "numeric": [],         "base_tier": 0},
+ "write_workspace": {"sink_class": "WRITE_WORKSPACE",  "rev": "R1", "persistent": false, "guarded": ["path"],            "content": ["content"],       "attach": [],         "dest_slot": null,     "numeric": [],         "base_tier": 1},
+ "send_email":      {"sink_class": "EXTERNAL_SEND",    "rev": "R2", "persistent": false, "guarded": ["to"],              "content": ["body", "attach"], "attach": ["attach"], "dest_slot": "to",     "numeric": [],         "base_tier": 1},
+ "pay":             {"sink_class": "PAYMENT",          "rev": "R3", "persistent": false, "guarded": ["payee", "amount"], "content": ["memo"],          "attach": [],         "dest_slot": "payee",  "numeric": ["amount"], "base_tier": 2},
+ "persist_memory":  {"sink_class": "PERSIST_MEMORY",   "rev": "R2", "persistent": true,  "guarded": ["key"],             "content": ["content"],       "attach": [],         "dest_slot": null,     "numeric": [],         "base_tier": 2},
+ "schedule":        {"sink_class": "PERSIST_SCHEDULE", "rev": "R2", "persistent": true,  "guarded": ["action", "target"], "content": [],               "attach": [],         "dest_slot": "target", "numeric": [],         "base_tier": 2}
+}

@@ -8,7 +8,18 @@ Any success-rate number in `out/report.md` is measured against the project's own
 
 ## Status
 
-Pre-build. The contract is written; neither track has run.
+- **Contract:** `09d26a6` (spec + scenario plan + protocol, after pre-seal amendments A1).
+- **Track A sealed:** `6c841b0`. 40 scenarios with hand-derived expectations; seal `sha256:002c24e5…5530455`.
+- **Track B implementation:** delivered blind, built from the contract alone. Committed before the reveal.
+- **Reveal:** pending.
+
+## Quickstart
+
+```
+py -3.14 run.py
+```
+
+Or double-click `run.bat`. It runs the unit tests, then the scenarios, and writes `out/report.md`. It needs Python 3.14 and the standard library only. See `docs/TRACK_B_README.md` for every option, including `--reveal`.
 
 ## Docs
 
@@ -17,6 +28,9 @@ Pre-build. The contract is written; neither track has run.
 - `docs/TRACK_SEPARATION_PROTOCOL.md` — chain of custody keeping the two tracks blind.
 - `docs/SPEC_AUDIT.md` — pre-seal contradiction pass over the contract.
 - `docs/AMENDMENTS.md` — every change to the contract, with the finding it resolves.
+- `docs/PROTOCOL_LOG.md` — custody events in the two-track run.
+- `docs/TRACK_B_README.md` — Track B's own README for the build (verbatim).
+- `docs/IMPLEMENTATION_NOTES.md` — every spec ambiguity Track B resolved, and the reading it chose.
 
 ## Method
 

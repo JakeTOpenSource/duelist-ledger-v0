@@ -1,0 +1,14 @@
+{
+ "principal": "principal@home.invalid",
+ "internal_domain": "corp.invalid",
+ "house_prefixes": ["house/", "config/", "witness/"],
+ "asset_flows": {"finance": ["principal", "internal"], "secret": ["principal"], "personal": ["principal", "internal", "contact"]},
+ "budgets": {"send_per_domain_per_period": 5, "money_per_period": 1000, "session_share": 0.5},
+ "tier3_money": 100,
+ "escrow_window": {"1": 1, "2": 5, "3": 5},
+ "fuse": {"READ_EXTERNAL": {"decay": 0.9, "threshold": 8}},
+ "probe_limit": 3,
+ "strike_hold": 3,
+ "p_source": {"per_session": 2, "per_scenario": 5},
+ "common_mode_sessions": 3
+}
