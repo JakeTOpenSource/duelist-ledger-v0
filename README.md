@@ -10,8 +10,13 @@ Any success-rate number in `out/report.md` is measured against the project's own
 
 - **Contract:** `09d26a6` (spec + scenario plan + protocol, after pre-seal amendments A1).
 - **Track A sealed:** `6c841b0`. 40 scenarios with hand-derived expectations; seal `sha256:002c24e5…5530455`.
-- **Track B implementation:** delivered blind, built from the contract alone. Committed before the reveal.
-- **Reveal:** pending.
+- **Track B implementation:** `b2e592a`, delivered blind and built from the contract alone. It was committed before the reveal.
+- **Reveal (run 1, blind):** `122b9c9`, published unedited in `results/run1/`.
+  - Seal verified.
+  - 1,410 runs, 3,255/3,255 decisions replayed, 0 invariant violations.
+  - **10,165 / 10,335 expected fields matched (98.4%).**
+- **Classification:** 0 gate bugs, 1 expectation error, 2 spec ambiguities. See `docs/CONTRADICTIONS.md`.
+- **Run 2:** the same code against corrected expectations v2, with lineage. 10,185 / 10,335; the rest await contract v0.1.
 
 ## Quickstart
 

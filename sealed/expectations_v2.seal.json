@@ -1,0 +1,8 @@
+{
+  "commit": "sha256:0890c277f09d53a5dd45ca886455a12bf59705b4c0841755295a6b82ac0b89f7",
+  "created": "2026-09-29T22:45:42+00:00",
+  "scenario_count": 40,
+  "algorithm": "sha256(canonical(expectations)+salt)",
+  "version": 2,
+  "note": "Post-reveal correction of run-1 expectation errors, with lineage. Not a blind prediction."
+}
