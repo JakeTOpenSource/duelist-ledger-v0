@@ -24,7 +24,7 @@ Any success-rate number in `out/report.md` is measured against the project's own
   - Seal verified.
   - 1,550 runs, 3,445/3,445 decisions replayed, 0 invariant violations.
   - **10,920 / 10,955 expected fields matched (99.7%).** All 35 mismatches are one field of one scenario (X2 `adversary_success`, every mode and variant).
-- **Classification v0.1:** pending, in `docs/CONTRADICTIONS.md`.
+- **Classification v0.1:** 1 spec ambiguity (C4: the `bypass_write` effect schema, which explains all 35 mismatches), 0 expectation errors, 0 scenario bugs, and 1 pre-registered gate bug (G1) that the suite never exercised. Six clauses matched only because both tracks assumed the same unpinned reading. See `docs/CONTRADICTIONS.md`. Author decisions for v0.2 are listed there.
 
 ## Quickstart
 
