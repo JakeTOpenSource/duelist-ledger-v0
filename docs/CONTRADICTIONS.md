@@ -105,13 +105,14 @@ N4 (rule matching inside a multi-reason action group), N6 (a fault `index` that 
 ## Models per stage
 Contract v0.1 drafted by the bridge on Fable 5.1; Track A on Fable 5.1; Track B on Opus 5.5; bridge, reveal and classification on Fable 5.1. Same family throughout; a cross-family Track B remains the next step in evidence strength.
 
-## Author decisions needed (for amendment A3, contract v0.2)
-1. **C4:** the `bypass_write` effect schema. Recommended: the nested `{tool, args}` form.
-2. **G1:** pin that every proposal reaches decide() and is logged AUTHORIZE, and the rule for an unknown tool or handle after DECLARE. Recommended: H2_NOT_DECLARED with `failing_slot` null. Fix the gate with lineage, add the sec. 17 test, and add a scenario that exercises the clean-room and post-DECLARE cases.
-3. **L3:** the sec. 5.1 group order. Recommended: the numbered order (S0, then session, then action), because a scope hold should never consume a principal decision, and a session close should not first ask for an approval it then discards. This overturns the reading both tracks used, so S2b and S2c's expectations get re-derived in the next sealed run.
-4. **L4–L6, L9:** pin directive semantics for `narrative_fitter`, the `add_step` pinned shape, `write_then_use`'s step ids, and fix I5a's plan text.
-5. **L8:** state in sec. 12 that sensor HOLDs and TRIPs open cases and appear in `holds`/`trips` under pass-through.
-6. **Track B's review gaps:** define `handle_of` for an origin the agent never received, and the value and label of an unresolvable handle after DECLARE.
+## Author decisions (2026-09-30), applied in amendment A3 (contract v0.2)
+1. **C4:** the `bypass_write` effect schema is the nested `{tool, args}` form. *Decided: recommended default.*
+2. **G1:** every proposal reaches decide() and is logged AUTHORIZE. An unknown tool or an unresolvable handle is H1 before DECLARE and H2_NOT_DECLARED after, with deny as the only option. The sec. 17 test and scenario N5 cover the clean-room and post-DECLARE cases. *Decided: recommended default.* The gate fix is made blind by the next Track B session.
+3. **L3:** the sec. 5.1 groups are settled in the fixed order S0, then session, then action, and a mixed HOLD's primary is the first reason of the first group settled. This overturns the reading both tracks used, so S2b and S2c are re-derived in the next sealed run. *Decided: recommended default.*
+4. **L4–L6, L9:** directive semantics for every agent kind, the `add_step` pinned shape, `write_then_use`'s step ids, and I5a's plan text are pinned.
+5. **L8:** sec. 12 states that sensor HOLDs and TRIPs are scoped, listed and open cases under pass-through.
+6. **Track B's review gaps:** `handle_of` for an origin the agent never received is an unresolvable handle, with value null and the context label.
+7. **Model family (decision 16):** Track B must run on another model family where one is available. *Decided: recommended default.*
 
 **Caution.** Any run that adopts these decisions after the reveal matches by construction. A new blind result needs a fresh two-track run on v0.2, ideally with Track B on a different model family.
 
