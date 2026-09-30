@@ -5,9 +5,9 @@ import shutil
 import tempfile
 import unittest
 
-from duelist_ledger.canon import H, canonical, new_key
-from duelist_ledger.ledger import (Ledger, tamper_delete, tamper_edit, tamper_rehash, tamper_reorder,
-                                   verify)
+from duelist_ledger.canon import H, canonical, dumps_line, new_key
+from duelist_ledger.ledger import (Ledger, read_entries, rehash_from, tamper_delete, tamper_edit, tamper_rehash,
+                                   tamper_reorder, verify)
 from duelist_ledger.seal import check_reveal_files, commit, verify_reveal
 from duelist_ledger.witness import Witness
 
@@ -54,6 +54,19 @@ class ChainTamperTest(unittest.TestCase):
     def test_reorder_detected(self):
         tamper_reorder(self.lp, 12)
         self.assertFalse(verify(self.lp, self.hp)["ok"])
+
+    def test_reorder_and_resign_detected_by_witness(self):
+        entries = read_entries(self.lp)
+        entries[11], entries[12] = entries[12], entries[11]
+        for n, e in enumerate(entries, 1):
+            e["seq"] = n
+        rehash_from(entries, 11, self.key)
+        with open(self.lp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("".join(dumps_line(e) + "\n" for e in entries))
+        self.assertTrue(verify(self.lp, os.path.join(self.dir, "none.jsonl"), gate_key=self.key)["ok"],
+                        "the re-signed chain alone looks fine")
+        res = verify(self.lp, self.hp, gate_key=self.key)
+        self.assertEqual((res["ok"], res["why"]), (False, "witness head mismatch"))
 
     def test_rehash_with_gate_key_detected_only_by_witness(self):
         tamper_rehash(self.lp, 5, self.key)

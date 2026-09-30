@@ -15,6 +15,7 @@ import random
 import re
 import shutil
 
+from . import labels as L
 from .agents import Agent, drive
 from .gateway import Gateway
 from .ledger import tamper_edit, tamper_rehash, verify as verify_ledger
@@ -27,11 +28,49 @@ from .world import World
 
 MODES = ("V2", "A0", "A1", "A3", "A4", "A5", "A7")
 STRICT_INVARIANT_MODES = ("V2", "A1", "A4", "A5", "A7", "R2")
+INDEXED_FAULTS = ("drop_receipt", "mutate_escrow")
+TAMPERS = ("tamper_ledger", "tamper_ledger_rehash")
 MISSING = "<missing>"
 
 
-def load_scenarios(directory):
-    """Every scenario in *.json files of a folder (a file may hold one scenario or a list)."""
+class ScenarioLoadError(ValueError):
+    """A scenario that breaks the schema rules the spec makes load errors (sec. 8)."""
+
+
+def fault_index(fault):
+    """The 1-based occurrence number k of an indexed fault (missing -> 1). None if not a whole number."""
+    k = fault.get("index", 1)
+    if isinstance(k, bool):
+        return None
+    if isinstance(k, float) and k.is_integer():
+        k = int(k)
+    return k if isinstance(k, int) else None
+
+
+def check_scenario(scenario):
+    """Raise ScenarioLoadError for a fault index k < 1 (indices are 1-based) or a mutate_escrow
+    without its required `to`."""
+    sid = scenario.get("id")
+    for n, fault in enumerate(scenario.get("faults") or [], 1):
+        if not isinstance(fault, dict):
+            raise ScenarioLoadError("scenario %s: fault %d is not an object" % (sid, n))
+        kind = fault.get("type")
+        if kind in INDEXED_FAULTS:
+            k = fault_index(fault)
+            if k is None or k < 1:
+                raise ScenarioLoadError("scenario %s: fault %d (%s) has index %r; fault indices are 1-based "
+                                        "(k >= 1)" % (sid, n, kind, fault.get("index")))
+        if kind == "mutate_escrow" and "to" not in fault:
+            raise ScenarioLoadError("scenario %s: fault %d (mutate_escrow) has no `to`" % (sid, n))
+    return scenario
+
+
+def load_scenarios(directory, errors=None):
+    """Every valid scenario in *.json files of a folder (a file may hold one scenario or a list).
+
+    A scenario that fails check_scenario is left out; if `errors` is a list, one
+    {"scenario", "file", "error"} record is appended to it for each.
+    """
     found = []
     if not directory or not os.path.isdir(directory):
         return found
@@ -43,8 +82,13 @@ def load_scenarios(directory):
             data = json.load(fh)
         items = data if isinstance(data, list) else data.get("scenarios", [data]) if isinstance(data, dict) else []
         for sc in items:
-            if isinstance(sc, dict) and "id" in sc and "sessions" in sc:
-                found.append(sc)
+            if not (isinstance(sc, dict) and "id" in sc and "sessions" in sc):
+                continue
+            try:
+                found.append(check_scenario(sc))
+            except ScenarioLoadError as exc:
+                if errors is not None:
+                    errors.append({"scenario": sc.get("id"), "file": name, "error": str(exc)})
     return found
 
 
@@ -91,17 +135,17 @@ def _num(v):
     return int(v) if isinstance(v, float) and v.is_integer() else v
 
 
-def _fault_detected(fault, gw):
+def _fault_detected(n, fault, gw, world, fired):
+    """Did fault number n produce its own signal? A fault that never fired produced none."""
     kind = fault.get("type")
-    codes = {(e["type"], e["code"]) for e in gw.events}
     if kind == "drop_receipt":
-        return ("HOLD", "RECEIPT_GAP") in codes
+        return world.dropped.get(n) in gw.gap_reported
     if kind == "bypass_write":
-        return ("TRIP", "T3_BYPASS") in codes
-    if kind in ("tamper_ledger", "tamper_ledger_rehash"):
-        return gw.chain_held
+        return fired.get(n) in gw.bypass_reported
+    if kind in TAMPERS:
+        return n in fired and gw.chain_held
     if kind == "mutate_escrow":
-        return ("TRIP", "T4_ARGS_MISMATCH") in codes
+        return fired.get(n) in gw.t4_items
     return False
 
 
@@ -112,9 +156,9 @@ def run_one(scenario, mode, variant, run_dir, base_policy, sinks, keep=False, dr
     inspect(gateway, world), if given, is called after the run (tests use it).
     """
     driver = driver or (lambda gw, spec: drive(gw, Agent(spec)))
-    sc = make_variant(scenario, variant)
+    sc = check_scenario(make_variant(check_scenario(scenario), variant))
     policy, ignored = effective_policy(base_policy, sc.get("policy_overrides"))
-    faults = [f for f in (sc.get("faults") or []) if isinstance(f, dict)]
+    faults = list(sc.get("faults") or [])
     os.makedirs(run_dir, exist_ok=True)
     world = World(sc.get("world"), run_dir, policy, faults)
     adversary = sc.get("adversary_goal") or []
@@ -126,45 +170,52 @@ def run_one(scenario, mode, variant, run_dir, base_policy, sinks, keep=False, dr
             tracker["ever"] = True
 
     world.listeners.append(watch)
-    tampers = [f for f in faults if f.get("type") in ("tamper_ledger", "tamper_ledger_rehash")]
-    mutations = [f for f in faults if f.get("type") == "mutate_escrow"]
-    applied = set()
+    fired = {}  # fault number -> what it hit (bypass effect id, mutated stage id, or True for a tamper)
     escrowed = {"n": 0}
 
     def after_anchor(gw):
-        for i, f in enumerate(tampers):
+        """A tamper edits its entry right after the first anchor whose seq >= entry_seq."""
+        for n, f in enumerate(faults):
             seq = f.get("entry_seq")
-            if i in applied or not isinstance(seq, int) or gw.last_anchor_seq < seq:
+            if f.get("type") not in TAMPERS or n in fired or isinstance(seq, bool) or not isinstance(seq, int):
                 continue
-            applied.add(i)
+            if gw.last_anchor_seq < seq:
+                continue
+            fired[n] = True
             if f["type"] == "tamper_ledger":
                 tamper_edit(gw.ledger_path, seq)
             else:
                 tamper_rehash(gw.ledger_path, seq, gw.gate_key)
 
     def on_escrow(gw, item):
+        """mutate_escrow{index: k, to}: set the dest slot of the k-th escrowed item (counted across
+        the scenario) to exactly `to`, before it is released."""
         escrowed["n"] += 1
-        for f in mutations:
-            if max(int(f.get("index", 1)), 1) == escrowed["n"]:
-                slot = gw.sinks[item["tool"]].get("dest_slot") or "to"
-                if slot in item["args"]:
-                    item["args"][slot] = dict(item["args"][slot], value="mutated@outside.invalid")
+        for n, f in enumerate(faults):
+            if f.get("type") != "mutate_escrow" or fault_index(f) != escrowed["n"]:
+                continue
+            sink = gw.sinks[item["tool"]]
+            slot = sink.get("dest_slot") or (sink.get("guarded") or [None])[0]
+            if slot is None:
+                continue
+            old = item["args"].get(slot) or {"label": L.top()}
+            item["args"][slot] = dict(old, value=copy.deepcopy(f["to"]))
+            fired[n] = item["stage_id"]
 
     principal = Principal(sc.get("principal_policy"), rubber_stamp=(mode == "A5"))
     gw = Gateway(run_dir, policy, sinks, world, principal, mode=mode, monitor=Monitor(sc.get("monitor")),
                  hooks={"after_anchor": after_anchor, "on_escrow": on_escrow})
     first_identity = None
-    bypass_n = 0
     for i, sess in enumerate(sc.get("sessions") or []):
         spec = sess.get("agent") or {}
         identity = spec.get("identity", "agent")
         first_identity = identity if first_identity is None else first_identity
         envelope = sess.get("envelope", sc.get("envelope"))
         opened = gw.open_session("s%d" % (i + 1), sess.get("task", ""), identity, envelope)
-        for f in faults:
+        for n, f in enumerate(faults):
             if f.get("type") == "bypass_write" and f.get("session", 0) == i:
-                bypass_n += 1
-                world.bypass_email(f.get("effect") or {}, "bypass-%d" % bypass_n)
+                fired[n] = "bypass-%d" % (n + 1)
+                world.bypass_email(f.get("effect") or {}, fired[n])
         if opened:
             driver(gw, spec)
     gw.finish_scenario()
@@ -193,7 +244,7 @@ def run_one(scenario, mode, variant, run_dir, base_policy, sinks, keep=False, dr
         "pre_classes": [c["pre_class"] for c in gw.cases.cases if c["pre_class"] != "none"],
         "strikes": gw.cases.strikes_of(first_identity),
         "counters": {k: _num(v) for k, v in sorted(gw.state.counters.snapshot().items()) if v},
-        "detected": bool(faults) and all(_fault_detected(f, gw) for f in faults),
+        "detected": bool(faults) and all(_fault_detected(n, f, gw, world, fired) for n, f in enumerate(faults)),
         "invariants_ok": gw.state.invariants_ok(),
     }
     if mode == "A3":
@@ -238,11 +289,7 @@ def compare(expected, summary):
     """Compare only the fields present in expected. Returns [(field, expected, actual)]."""
     out = []
     for field, exp in (expected or {}).items():
-        if field == "scopes" and isinstance(exp, list):
-            full = any(isinstance(x, str) and ":" in x for x in exp)
-            act = summary.get("scopes_full" if full else "scopes", MISSING)
-            ok = _same(exp, act)
-        elif field == "counters" and isinstance(exp, dict):
+        if field == "counters" and isinstance(exp, dict):
             act = summary.get("counters", {})
             ok = all(_same(v, act.get(k, 0)) for k, v in exp.items())
         elif field == "cross_check":

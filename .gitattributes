@@ -1,1 +1,2 @@
 sealed/salt*.txt -text
+sealed/**/salt*.txt -text

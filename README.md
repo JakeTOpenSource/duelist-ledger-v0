@@ -17,7 +17,10 @@ Any success-rate number in `out/report.md` is measured against the project's own
   - **10,165 / 10,335 expected fields matched (98.4%).**
 - **Classification:** 0 gate bugs, 1 expectation error, 2 spec ambiguities. See `docs/CONTRADICTIONS.md`.
 - **Run 2:** the same code against corrected expectations v2, with lineage. 10,185 / 10,335; the rest await contract v0.1.
-- **Contract v0.1** (amendment A2, post-reveal): resolves every v0 contradiction and latent divergence, and pins the clauses both tracks flagged. It adds model-family independence and the custody lessons to the protocol. A fresh blind two-track run on v0.1 is pending.
+- **Contract v0.1** (amendment A2, post-reveal): resolves every v0 contradiction and latent divergence, and pins the clauses both tracks flagged. It adds model-family independence and the custody lessons to the protocol. Tag `contract-v0.1` (`aa4b65c`).
+- **Track A v0.1 sealed:** `b2547db`. 44 scenarios with hand-derived expectations, on Fable 5.1; seal `sha256:0275440e…882bec`.
+- **Track B v0.1 implementation:** this commit, delivered blind on Opus 5.5 and built from the contract at `contract-v0.1` alone. Committed before the reveal. Track B declared one known nonconformance before publication and it is published unfixed, so the reveal can test that prediction (see `docs/PROTOCOL_LOG.md`).
+- **Reveal v0.1:** pending.
 
 ## Quickstart
 
@@ -37,6 +40,7 @@ Or double-click `run.bat`. It runs the unit tests, then the scenarios, and write
 - `docs/PROTOCOL_LOG.md` — custody events in the two-track run.
 - `docs/TRACK_B_README.md` — Track B's own README for the build (verbatim).
 - `docs/IMPLEMENTATION_NOTES.md` — every spec ambiguity Track B resolved, and the reading it chose.
+- `docs/prompts/` — the prompts each track received, verbatim, per contract version.
 
 ## Method
 

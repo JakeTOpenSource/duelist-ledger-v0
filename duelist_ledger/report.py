@@ -8,7 +8,7 @@ and the list of mismatches against the sealed expectations (if revealed).
 import json
 import os
 
-from . import CAVEAT
+from . import CAVEAT, CONTRACT
 
 OUT_OF_SCOPE = ("LLM agents, and the LLM monitor/duelist; cross-org operation (two houses, handshake, "
                 "arbiter); attestation, TEEs, DPUs; real OS sandboxing (process isolation is by "
@@ -43,15 +43,20 @@ def write(out_dir, payload):
 
 
 def render(p):
-    lines = [CAVEAT, "", "# Duelist Ledger v0: run report", ""]
+    lines = [CAVEAT, "", "# Duelist Ledger v0: run report (contract v%s)" % CONTRACT, ""]
     ut = p.get("unit_tests") or {}
+    seal = p.get("seal") or {}
     lines += ["- Unit tests: %s (%s run, %s failures, %s errors)" % (
         "PASS" if ut.get("ok") else ("SKIPPED" if ut.get("skipped") else "FAIL"),
         ut.get("run", 0), ut.get("failures", 0), ut.get("errors", 0)),
         "- Scenarios folder: `%s` (%d scenarios, %d runs)" % (p.get("scenario_dir"), p.get("scenario_count", 0),
                                                               len(p.get("runs", []))),
-        "- Seal: %s" % (p.get("seal") or {}).get("status", "not requested"),
-        "- Exit code: %s" % p.get("exit_code"), ""]
+        "- Seal: %s" % seal.get("status", "not requested")]
+    if seal.get("version_note"):
+        lines.append("- Expectations version: %s" % seal["version_note"])
+    for err in p.get("load_errors") or []:
+        lines.append("- Load error (scenario skipped): %s" % err["error"])
+    lines += ["- Exit code: %s" % p.get("exit_code"), ""]
     metrics = p.get("metrics") or {}
     lines += ["## Per-mode metrics", "",
               "| mode | runs | ASR | benign utility | utility under attack | false-HOLD rate | audit load (min/1000) | benign TRIPs | replay | invariant violations | decide p50/p99 (us) |",

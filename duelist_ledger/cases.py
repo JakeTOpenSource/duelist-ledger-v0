@@ -7,34 +7,41 @@ strikes to the agent's identity. If the same untrusted source shows up in suspec
 across several sessions, the whole organisation is held (common-mode).
 """
 
-SENSOR = ("T3", "RECEIPT_GAP", "SEQ_GAP", "SILENCE", "CHAIN", "VERIFY_MISMATCH")
+SENSOR = ("T3_BYPASS", "T4_ARGS_MISMATCH", "RECEIPT_GAP", "SEQ_GAP", "SILENCE", "CHAIN",
+          "VERIFY_MISMATCH")
 NOT_A_CLASS = ("CHALLENGE", "CONFIRM_T3", "MONITOR")
+T_RULES = ("T1_HOUSE", "T2_CANARY")
+UNTAINTED_VIOLATIONS = ("H1_NO_DECLARATION", "H2_NOT_DECLARED", "H3_PINNED_MISMATCH", "T1_HOUSE", "T2_CANARY")
 
 
-def _is(code, name):
-    return code == name or code.startswith(name + "_")
+def pre_classify(primary, failing_tainted=False, session_tainted=False, h2_no_slot=False):
+    """First matching rule of spec sec. 5.6.
 
-
-def pre_classify(primary, failing_tainted=False, session_tainted=False, h2_all_pinned=False):
-    """First matching rule of spec sec. 5.6."""
+    failing_tainted is the decision's (sec. 4), so it may come from a non-primary reason.
+    h2_no_slot: the H2 reason named no slot (every guarded value is pinned somewhere).
+    """
     code = primary or ""
-    if any(_is(code, s) for s in SENSOR):
+    if code in SENSOR:
         return "sensor-fault"
     if code == "PROBE":
         return "probing"
-    if _is(code, "H0"):
+    if code == "COMMON_MODE":
+        return "common-mode"
+    if code == "H0_ENVELOPE":
         return "agent-violation"
     if code in NOT_A_CLASS:
         return "none"
-    if failing_tainted or ((_is(code, "T1") or _is(code, "T2")) and session_tainted):
+    if failing_tainted or (code in T_RULES and session_tainted) or (code == "H7_AMEND_WIDEN" and session_tainted):
         return "injection-suspected"
-    if _is(code, "H2") and not session_tainted and h2_all_pinned:
+    if code == "S0_SCOPE_HELD":
+        return "none"
+    if (code == "H2_NOT_DECLARED" and h2_no_slot) or (code == "H7_AMEND_WIDEN" and not session_tainted):
         return "declaration-gap"
-    if any(_is(code, c) for c in ("H2", "H3", "T1", "T2")) and not session_tainted:
+    if code in UNTAINTED_VIOLATIONS and not session_tainted:
         return "agent-violation"
     if code.startswith("H5_"):
         return "budget"
-    if _is(code, "H6"):
+    if code == "H6_PERSIST_AFTER_TAINT":
         return "persistence-after-taint"
     return "unresolved"
 

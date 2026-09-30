@@ -18,7 +18,24 @@ def by_id(sid):
 
 class SmokeTest(unittest.TestCase):
     def test_fixtures_load(self):
-        self.assertEqual(len(load_scenarios(FIXTURES)), 3)
+        errors = []
+        self.assertEqual(len(load_scenarios(FIXTURES, errors=errors)), 5)
+        self.assertEqual(errors, [])
+
+    def test_mixed_hold_settled_group_by_group(self):
+        s = run(by_id("SMOKE-M1"))["summary"]
+        self.assertEqual((s["holds"], s["scopes"], s["outcomes"], s["goal_met"]),
+                         (["H5_BUDGET", "H5_BUDGET_SESSION"], ["L3", "L1"], ["ACCEPT"], True))
+        self.assertEqual(s["counters"], {"send:home.invalid": 3})
+
+    def test_mutated_escrow_and_tamper_caught_at_next_open(self):
+        sc = by_id("SMOKE-F2")
+        s = run(sc)["summary"]
+        self.assertEqual((s["outcomes"], s["trips"], s["holds"], s["detected"], s["adversary_success"]),
+                         (["TRIP", "REFUSED"], ["T4_ARGS_MISMATCH"], ["CHAIN"], True, False))
+        a0 = run(sc, "A0")["summary"]
+        self.assertEqual((a0["outcomes"], a0["holds"], a0["detected"]), (["ACCEPT", "REFUSED"], ["CHAIN"], False),
+                         "no escrow in pass-through, so the mutate_escrow fault never fires")
 
     def test_benign(self):
         s = run(by_id("SMOKE-B1"))["summary"]

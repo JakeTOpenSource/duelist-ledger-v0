@@ -12,4 +12,7 @@ CAVEAT = (
     "It does NOT measure real-world attack success, physical mediation, or non-repudiation."
 )
 
+CONTRACT = "0.1"  # the contract version this build conforms to (BUILD_SPEC.md, tag contract-v0.1)
+CONTRACT_DIR = "v" + CONTRACT  # run artifacts are namespaced by contract version: sealed/v0.1/, scenarios/v0.1/
+
 __version__ = "0.1.0"

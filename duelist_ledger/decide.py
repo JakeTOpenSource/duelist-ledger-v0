@@ -5,9 +5,13 @@ agent committed to, trust labels, counters, scope states), decide() says ALLOW, 
 DENY or TRIP, with the reason codes. It reads no files, no clock and no randomness, so anyone
 can re-run it later on the logged inputs and must get the same answer.
 
-Rule order (spec sec. 4): the first TRIP rule found is final. Otherwise every HOLD reason is
-collected and the first one in RULE_ORDER is the primary. No reasons -> ALLOW (R0/R1) or
-ESCROW (R2/R3).
+Rule order (spec sec. 4): the first TRIP rule found is final, before DECLARE too (then the
+declaration is null, so T1/T2 fire ahead of H1). Otherwise every HOLD reason is collected and
+the first one in RULE_ORDER is the primary. No reasons -> ALLOW (R0/R1) or ESCROW (R2/R3).
+
+failing_slot is the slot named by the first reason, in rule order, that names one: H2 names the
+first guarded slot whose value is pinned nowhere in the declaration; H3, H4 and H9 name their
+guarded slot; H8 names the dest_slot; T1, T2, H1, S0, H5_* and H6 name none.
 """
 
 import re
@@ -197,7 +201,10 @@ def decide(inputs):
                         money_band=(mode != "A4"))
 
     def result(outcome, details):
-        codes = [d["code"] for d in details]
+        codes = []
+        for d in details:
+            if d["code"] not in codes:
+                codes.append(d["code"])
         first = details[0] if details else None
         slotted = next((d for d in details if d.get("slot")), None)
         return {
@@ -212,20 +219,18 @@ def decide(inputs):
             "details": details,
         }
 
-    # ---- T-rules: the first one found is final ----
+    # ---- T-rules: the first one found is final. T1 and T2 name no slot. ----
     prefixes = policy.get("house_prefixes") or []
     for slot in sorted(args):
         for text in strings_in(value(slot)):
             norm = normalize_path(text)
             if any(norm.startswith(p) for p in prefixes):
                 return result("TRIP", [{"code": "T1_HOUSE", "scope": "L1", "held": session_scope,
-                                        "slot": slot, "tainted": is_tainted(label(slot))}])
+                                        "slot": None, "tainted": False, "arg": slot}])
     token = canary_violation(sink, args, payload_text, inputs.get("canaries") or [])
     if token is not None:
-        slot = sink.get("dest_slot") or ("key" if sink.get("sink_class") == "PERSIST_MEMORY" else None)
         return result("TRIP", [{"code": "T2_CANARY", "scope": "L1", "held": session_scope,
-                                "slot": slot, "tainted": is_tainted(label(slot)) if slot else False,
-                                "token": token}])
+                                "slot": None, "tainted": False, "token": token}])
 
     # ---- H-rules: collect all ----
     found = []
@@ -237,15 +242,19 @@ def decide(inputs):
     if not isinstance(decl, dict):
         add("H1_NO_DECLARATION", "L0", item_scope)
     elif not step_ok or step.get("used", 0) >= step.get("max_calls", 1):
-        add("H2_NOT_DECLARED", "L0", item_scope)
+        pinned_anywhere = []
+        for candidate in decl.get("steps") or []:
+            for vals in (candidate.get("pinned") or {}).values():
+                pinned_anywhere.extend(vals if isinstance(vals, (list, tuple)) else [vals])
+        h2_slot = next((sl for sl in ((sink or {}).get("guarded") or [])
+                        if sl in args and not member(value(sl), pinned_anywhere)), None)
+        add("H2_NOT_DECLARED", "L0", item_scope, h2_slot, is_tainted(label(h2_slot)) if h2_slot else False)
 
     rev = sink.get("rev") if sink else None
     if rev in ESCROW_REVS:
         states = inputs.get("scope_states") or {}
-        links = sorted(k for k in states if k.startswith("L2:"))
-        keys = sorted(k for k in states if k.startswith("L3:budget:"))
-        for name in ["L3:org"] + links + keys:
-            if name in states and states[name] != "RUN":
+        for name in ("L3:org", "L2:agent->gate", "L2:gate->world:%s" % sink.get("sink_class")):
+            if states.get(name, "RUN") != "RUN":
                 add("S0_SCOPE_HELD", name.split(":", 1)[0], name)
                 break
 

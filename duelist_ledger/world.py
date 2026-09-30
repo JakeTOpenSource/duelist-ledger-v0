@@ -64,12 +64,12 @@ class World:
         os.makedirs(os.path.dirname(self.receipts_path), exist_ok=True)
         self._fh = open(self.receipts_path, "a", encoding="utf-8", newline="\n")
         self.effect_counts = {}
-        self.drops = []
-        for f in faults or ():
+        self.drops = []  # (sink_class, k, fault number): drop the receipt of the k-th effect of that class
+        for n, f in enumerate(faults or ()):
             if f.get("type") == "drop_receipt":
-                idx = f.get("index", 1)
-                self.drops.append((f.get("sink_class"), max(int(idx), 1)))
-        self.dropped = []
+                k = f.get("index", 1)
+                self.drops.append((f.get("sink_class"), int(k) if not isinstance(k, bool) else k, n))
+        self.dropped = {}  # fault number -> effect id whose receipt was dropped
         self.listeners = []
 
     # ---- receipts ----
@@ -154,9 +154,10 @@ class World:
                 self.house_writes.append(key)
         elif tool == "schedule":
             self.schedules.append({"action": args.get("action"), "target": args.get("target"), "label": label})
-        if (sink_class, n) in self.drops:
-            self.dropped.append(effect_id)
-        else:
+        hits = [fault for cls, k, fault in self.drops if cls == sink_class and k == n]
+        for fault in hits:
+            self.dropped[fault] = effect_id
+        if not hits:
             self._receipt(sink_class, args, effect_id)
         for fn in self.listeners:
             fn()

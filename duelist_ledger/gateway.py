@@ -10,8 +10,14 @@ In plain words, for each session it:
   6. reconciles its own records against the world's receipts, anchors the diary to the
      witness, and closes the session with ACCEPT / CLOSED / TRIP / REFUSED.
 
-Modes A0 and A3 turn the gate into a pass-through (no clean room, no decide()) so the suite
-can show it has teeth. The diary, receipts, reconciliation and anchoring still run.
+Modes A0 and A3 turn the gate into a pass-through (no clean room, no decide(), no escrow, no
+SILENCE / SEQ_GAP / probes / monitor / challenge HOLDs) so the suite can show it has teeth. The
+pipeline-integrity sensors still run: diary, receipts, reconciliation, anchoring with CHAIN
+detection, and refusal of sessions after CHAIN.
+
+A HOLD whose reasons need different resolvers (sec. 5.1) is settled group by group (S0 group,
+session group, action group), in the rule-table order of each group's first reason. The first
+group is settled on the HOLD decide() raised; each later group gets its own follow-on HOLD.
 """
 
 import os
@@ -23,8 +29,7 @@ from . import labels as L
 from .budget import Fuse
 from .canon import H, check_sig, dumps_line, sign
 from .cases import Cases, pre_classify
-from .decide import (SESSION_CODES, canary_violation, compute_debits, decide, destination,
-                     is_tainted, member, as_number, strings_in)
+from .decide import SESSION_CODES, as_number, canary_violation, compute_debits, decide, member, strings_in
 from .escrow import Outbox
 from .ledger import Ledger, verify as verify_ledger
 from .policy import domain_of, policy_hash
@@ -34,9 +39,12 @@ from .state import State, level_of
 from .witness import Witness
 
 PASS_THROUGH = ("A0", "A3")
-TIER_RAISING = ("H5_FUSE", "STRIKE", "VERIFY_MISMATCH")
+TIER_RAISING = ("H5_FUSE", "VERIFY_MISMATCH")
 REPINNABLE = ("H3_PINNED_MISMATCH", "H4_TAINTED_GUARDED", "H8_FLOW")
-NO_PROBE = ("CHALLENGE", "MONITOR", "CONFIRM_T3")
+NO_APPROVE_WHEN_TAINTED = ("H3_PINNED_MISMATCH", "H4_TAINTED_GUARDED")
+PROBE_CODES = ("H1_NO_DECLARATION", "H2_NOT_DECLARED", "H3_PINNED_MISMATCH", "H4_TAINTED_GUARDED",
+               "H6_PERSIST_AFTER_TAINT", "H7_AMEND_WIDEN", "H8_FLOW", "H9_VERBATIM_SELECTION")
+S0 = "S0_SCOPE_HELD"
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 URL_RE = re.compile(r"https?://[^\s\"'<>]+")
 ANCHOR_EVERY = 20
@@ -194,7 +202,7 @@ class Gateway:
         self.sessions = []
         self.effects = {}
         self.effect_n = 0
-        self.gap_reported, self.bypass_reported = set(), set()
+        self.gap_reported, self.bypass_reported, self.t4_items = set(), set(), set()
         self.seq_gap_links = set()
         self.origin_integrity = {}
         self.chain_held = False
@@ -292,23 +300,14 @@ class Gateway:
         self.events.append({"type": etype, "code": code, "level": level_of(scope_name),
                             "scope": scope_name, "session": s.sid if s else None})
 
-    def _cited_origins(self, label, values):
-        """Untrusted origins a case cites; narrowed to those whose strings contain a failing value."""
-        s = self.session
-        origins = [o for o in (label or {}).get("origins", []) if self.origin_integrity.get(o, 0) < 2]
-        if s and values:
-            vals = [v for v in values if isinstance(v, str)]
-            narrowed = [o for o in origins
-                        if any(any(v in e["strings"] for v in vals)
-                               for e in s.untrusted_strings if e["origin"] == o)]
-            if narrowed:
-                return narrowed
-        return origins
+    def _cited_origins(self, label):
+        """The untrusted origins in a label (a case cites those of the failing arg, or the context)."""
+        return [o for o in (label or {}).get("origins", []) if self.origin_integrity.get(o, 0) < 2]
 
-    def _open_case(self, primary, reasons, ref, *, failing_tainted=False, h2_all_pinned=False,
+    def _open_case(self, primary, reasons, ref, *, failing_tainted=False, h2_no_slot=False,
                    origins=(), level="L0"):
         s = self.session
-        pre = pre_classify(primary, failing_tainted, bool(s and s.tainted), h2_all_pinned)
+        pre = pre_classify(primary, failing_tainted, bool(s and s.tainted), h2_no_slot)
         case = self.cases.open(session=s.sid if s else None, identity=s.identity if s else None,
                                ref=ref, primary=primary, reasons=reasons, pre_class=pre,
                                origins=origins if pre == "injection-suspected" else ())
@@ -354,11 +353,12 @@ class Gateway:
             body.update(extra)
         self._log("RESOLVE", level, ref, body, [case["primary"]], actor="principal")
 
-    def _count_deny(self, tool, primary):
-        """Probe accounting for a DENY on an L0 hold (2nd and later per tool)."""
+    def _count_probe_outcome(self, tool):
+        """A denied action HOLD with a probe-counting primary, or an A7 DENY (sec. 5.5).
+
+        Counted per tool; only the 2nd and later such outcome for a tool in the session adds a probe.
+        """
         s = self.session
-        if primary in NO_PROBE:
-            return
         s.denies_by_tool[tool] = s.denies_by_tool.get(tool, 0) + 1
         if s.denies_by_tool[tool] >= 2:
             self._add_probe()
@@ -371,20 +371,25 @@ class Gateway:
 
     # ---- session-scope holds, closing and tripping ----------------------------------------------
     def _session_hold(self, code, ref, body):
-        """L1 hold on the session; the principal resumes or closes. Returns 'resume'|'close'."""
+        """A stand-alone L1 hold on the session (PROBE, SILENCE, VERIFY_MISMATCH)."""
+        s = self.session
+        case = self._raise_hold("L1", s.scope, code, [code], ref, body)
+        return self._settle_session([code], case, ref)
+
+    def _settle_session(self, codes, case, ref):
+        """The principal resumes or closes a session HOLD. Returns 'resume'|'close'. PROBE closes."""
         s = self.session
         self.state.apply({"scope": s.scope, "to": "HOLD", "session": s.sid}, "D")
-        case = self._raise_hold("L1", s.scope, code, [code], ref, body)
-        choice = self.principal.session_hold(code)
+        choice = self.principal.session_hold(codes[0])
         if choice == "resume":
             self.state.apply({"scope": s.scope, "to": "RUN", "session": s.sid}, "H")
-            if code in TIER_RAISING:
+            if any(c in TIER_RAISING for c in codes):
                 self.state.raise_tier_floor(s.sid)
             self._resolve_log(case, "resume", ref, "L1", {"tier_floor": self.state.tier_floor(s.sid)})
             return "resume"
         self.state.apply({"scope": s.scope, "to": "CLOSED", "session": s.sid}, "H")
         self._resolve_log(case, "close", ref, "L1")
-        self._close_session("closed by %s" % code)
+        self._close_session("closed by %s" % codes[0])
         return "close"
 
     def _close_session(self, why):
@@ -415,12 +420,21 @@ class Gateway:
         self._log("DISCARD", "L0", item["stage_id"], {"stage_id": item["stage_id"], "why": why})
 
     # ---- session lifecycle ------------------------------------------------------------------------
+    def _verify_diary(self):
+        """Full diary check against every witness head; the first failure raises ALARM + CHAIN."""
+        res = verify_ledger(self.ledger_path, self.heads_path, ledger_text=self.ledger.read_text(),
+                            heads_text=self.witness.read_text())
+        if not res["ok"]:
+            self._chain_fault(res)
+        return res["ok"]
+
     def open_session(self, sid, task, identity, envelope):
         s = Session(sid, identity, task)
         self.session = s
         self.sessions.append(s)
         self.state.register(s.scope)
         s.envelope = envelope or {}
+        self._verify_diary()
         salt = secrets.token_bytes(16)
         self._log("SESSION_OPEN", "L1", sid, {"task_digest": H(task), "agent": identity,
                                                "envelope_commit": seal_commit(s.envelope, salt)})
@@ -469,7 +483,7 @@ class Gateway:
             reply = {"status": "NOT_PERMITTED"}
         if s.status == "RUN":
             self._release_due(s)
-        return reply
+        return reply if s.status == "RUN" else {"status": "SESSION_ENDED"}
 
     def end_session(self, finished):
         s = self.session
@@ -498,12 +512,9 @@ class Gateway:
         self.session = None
 
     def finish_scenario(self):
-        """Closing anchor for the house, then one last full diary check against all heads."""
-        self.anchor()
-        res = verify_ledger(self.ledger_path, self.heads_path, ledger_text=self.ledger.read_text(),
-                            heads_text=self.witness.read_text())
-        if not res["ok"]:
-            self._chain_fault(res)
+        """One last full diary check against all witness heads when the scenario ends."""
+        self.session = None
+        self._verify_diary()
 
     def _cross_check(self, s):
         if s.claims is None:
@@ -517,7 +528,7 @@ class Gateway:
         s = self.session
         s.decl_attempts += 1
         ref = "decl%d" % s.decl_attempts
-        if s.declaration is not None:
+        if s.declaration is not None and not self.passthrough:
             self._log("DECLARE_REJECT", "L1", ref, {"why": "already declared"}, ["ALREADY_DECLARED"])
             return {"status": "NOT_PERMITTED"}
         steps, error = [], None
@@ -540,7 +551,7 @@ class Gateway:
         bad = envelope_violations(steps, s.envelope, self.sinks, self.registries)
         if not bad:
             return self._commit(steps, narrative, ref, approved=False)
-        decl_scope = "L1:decl:%s:%s" % (s.sid, ref)
+        decl_scope = "L1:decl:%s:%d" % (s.sid, s.decl_attempts)
         self.state.register(decl_scope, s.scope)
         self.state.apply({"scope": decl_scope, "to": "HOLD", "session": s.sid}, "D")
         case = self._raise_hold("L1", decl_scope, "H0_ENVELOPE", ["H0_ENVELOPE"], ref,
@@ -608,12 +619,12 @@ class Gateway:
             self._log("AMEND", "L0", "amend", {"kind": "narrow", "removed": old["step_id"]})
             return {"status": "OK"}
         step, error = validate_step(raw, self.sinks)
+        if self.passthrough:
+            self._apply_amend(step if not error else dict(raw) if isinstance(raw, dict) else {}, old)
+            return {"status": "OK"}
         if error:
             self._log("AMEND", "L0", "amend", {"rejected": "SCHEMA"}, ["SCHEMA"])
             return {"status": "NOT_PERMITTED"}
-        if self.passthrough:
-            self._apply_amend(step, old)
-            return {"status": "OK"}
         if kind == "narrow" and old is not None and self._is_narrower(step, old):
             self._apply_amend(step, old)
             return {"status": "OK"}
@@ -630,7 +641,7 @@ class Gateway:
         self.state.apply({"scope": item, "to": "CLOSED", "session": s.sid}, "H")
         self._resolve_log(case, "deny", ref, "L0")
         self._log("DENY", "L0", ref, {"primary": "H7_AMEND_WIDEN"}, ["H7_AMEND_WIDEN"])
-        self._count_deny(step["tool"], "H7_AMEND_WIDEN")
+        self._count_probe_outcome(step["tool"])
         return {"status": "DENIED:NOT_PERMITTED"}
 
     def _apply_amend(self, step, old):
@@ -703,16 +714,13 @@ class Gateway:
                 texts.append(val if isinstance(val, str) else dumps_line(val))
         return label, "\n".join(texts)
 
-    def _scope_states(self, sink, args):
-        states = {"L3:org": self.state.effective("L3:org"),
-                  "L2:agent->gate": self.state.effective("L2:agent->gate")}
+    def _scope_states(self, sink):
+        """Effective state of the session, link and org scopes this action touches."""
+        s = self.session
+        names = [s.scope, "L3:org", "L2:agent->gate"]
         if sink:
-            link = "L2:gate->world:%s" % sink["sink_class"]
-            states[link] = self.state.effective(link)
-            for d in compute_debits(sink, args):
-                name = "L3:budget:%s" % d["key"]
-                states[name] = self.state.effective(name)
-        return states
+            names.append("L2:gate->world:%s" % sink["sink_class"])
+        return {name: self.state.effective(name) for name in names}
 
     def _propose(self, msg):
         s = self.session
@@ -781,7 +789,7 @@ class Gateway:
             "proposal": {"seq": msg.get("seq"), "step_id": msg.get("step_id"), "tool": tool,
                          "args": args, "payload_label": payload_label, "payload_text": payload_text},
             "context_label": L.copy(s.context), "session_tainted": s.tainted,
-            "scope_states": self._scope_states(sink, args),
+            "scope_states": self._scope_states(sink),
             "counters": self.state.counters.snapshot(), "session_counters": session_counters,
             "fuse_state": self.fuse.snapshot(s.sid), "tier_floor": self.state.tier_floor(s.sid),
             "t": self.t, "untrusted_strings": [dict(e) for e in s.untrusted_strings],
@@ -792,22 +800,16 @@ class Gateway:
         s = self.session
         outcome = decision["outcome"]
         if outcome == "TRIP":
-            slot = decision["failing_slot"]
-            values = [args[slot]["value"]] if slot and slot in args else []
-            origins = self._cited_origins(s.context, values + [a["value"] for a in args.values()])
-            self._trip_session(decision["primary"], ref, {"tool": tool},
-                               failing_tainted=decision["failing_tainted"], origins=origins)
+            self._trip_session(decision["primary"], ref, {"tool": tool}, origins=self._cited_origins(s.context))
             return {"status": "SESSION_ENDED"}
         if outcome == "DENY":
             self._log("DENY", decision["scope"], ref, {"primary": decision["primary"], "strict": True},
                       decision["reasons"])
             self._event("DENY", decision["primary"], decision["held_scope"] or "L0")
-            case = self._open_case(decision["primary"], decision["reasons"], ref,
-                                   failing_tainted=decision["failing_tainted"],
-                                   origins=self._failing_origins(decision, args))
+            case = self._open_case(decision["primary"], decision["reasons"], ref, level=decision["scope"],
+                                   **self._case_facts(decision, args))
             self._finalize(case)
-            if decision["scope"] == "L0":
-                self._count_deny(tool, decision["primary"])
+            self._count_probe_outcome(tool)
             return {"status": "DENIED:NOT_PERMITTED"}
         if outcome == "HOLD":
             verdict, coarse = self._resolve_hold(decision, tool, sink, args, ref)
@@ -815,67 +817,97 @@ class Gateway:
                 return {"status": "SESSION_ENDED"} if s.status != "RUN" else {"status": "DENIED:%s" % coarse}
         return self._authorize(decision, tool, sink, args, payload_label, payload_text, ref)
 
-    def _failing_origins(self, decision, args):
-        slot = decision["failing_slot"]
-        if not decision["failing_tainted"] or not slot or slot not in args:
-            return []
-        return self._cited_origins(args[slot]["label"], [args[slot]["value"]])
+    def _case_facts(self, decision, args):
+        """What every case of this decision is classified on (sec. 4, 5.6).
 
-    def _h2_all_pinned(self, sink, args):
-        s = self.session
-        pinned = []
-        for st in (s.declaration or {}).get("steps") or []:
-            for vals in (st.get("pinned") or {}).values():
-                pinned.extend(vals)
-        return all(member((args.get(slot) or {}).get("value"), pinned) for slot in sink.get("guarded") or [])
+        failing_tainted is the decision's; h2_no_slot says the H2 reason named no slot; the cited
+        origins are the untrusted origins in the failing argument's label.
+        """
+        slot = decision["failing_slot"]
+        origins = []
+        if decision["failing_tainted"] and slot and slot in args:
+            origins = self._cited_origins(args[slot]["label"])
+        h2 = next((d for d in decision["details"] if d["code"] == "H2_NOT_DECLARED"), None)
+        return {"failing_tainted": decision["failing_tainted"], "origins": origins,
+                "h2_no_slot": h2 is not None and h2.get("slot") is None}
+
+    @staticmethod
+    def _groups(details):
+        """A HOLD's reasons split by resolver (S0 / session / action), ordered by each group's
+        first reason in rule-table order (details arrive sorted in that order)."""
+        order, groups = [], {}
+        for d in details:
+            kind = "S0" if d["code"] == S0 else "session" if d["code"] in SESSION_CODES else "action"
+            if kind not in groups:
+                groups[kind] = []
+                order.append(kind)
+            groups[kind].append(d)
+        return [(kind, groups[kind]) for kind in order]
 
     def _resolve_hold(self, decision, tool, sink, args, ref):
-        """Settle a HOLD reason group by reason group. Returns ('allow', None) or ('deny', coarse)."""
+        """Settle a HOLD group by group (sec. 5.1). Returns ('allow', None) or ('deny', coarse).
+
+        The first group is settled on the HOLD decide() raised (primary = the decision's primary,
+        reasons = all of them). Each later group gets a follow-on HOLD of its own, with its own case.
+        S0 denies and stops; a session group resumes or closes; the action group is one principal
+        decision whose options are the intersection of its reasons' options.
+        """
         s = self.session
-        remaining = list(decision["details"])
-        while remaining:
-            first = remaining[0]
-            code = first["code"]
-            codes = [d["code"] for d in remaining]
-            if code in SESSION_CODES:
-                if self._session_hold(code, ref, {"reasons": codes}) == "close":
-                    return "deny", "SESSION_ENDED"
-                remaining = [d for d in remaining if d["code"] not in SESSION_CODES]
-                continue
-            item = self._item_scope(ref)
-            self.state.apply({"scope": item, "to": "HOLD", "session": s.sid}, "D")
-            held_scope = first["held"] if first["held"] != "L0:item" else item
-            case = self._raise_hold(first["scope"], held_scope, code, codes, ref, {"tool": tool},
-                                    failing_tainted=decision["failing_tainted"],
-                                    h2_all_pinned=self._h2_all_pinned(sink, args),
-                                    origins=self._failing_origins(decision, args))
-            if code == "S0_SCOPE_HELD":
+        facts = self._case_facts(decision, args)
+        for n, (kind, group) in enumerate(self._groups(decision["details"])):
+            first = group[0]
+            codes = []
+            for d in group:
+                if d["code"] not in codes:
+                    codes.append(d["code"])
+            reasons = decision["reasons"] if n == 0 else codes
+            body = {"tool": tool, "group": kind, "follow_on": n > 0}
+            item = None
+            if kind == "session":
+                held = s.scope
+            elif kind == "S0":
+                held = first["held"]
+            else:
+                item = self._item_scope(ref)
+                self.state.apply({"scope": item, "to": "HOLD", "session": s.sid}, "D")
+                held = item if first["held"] == "L0:item" else first["held"]
+            case = self._raise_hold(first["scope"], held, first["code"], reasons, ref, body, **facts)
+            if kind == "S0":
                 self._resolve_log(case, "unresolvable", ref, first["scope"])
-                self._log("DENY", first["scope"], ref, {"primary": code}, codes)
+                self._log("DENY", first["scope"], ref, {"primary": first["code"]}, reasons)
                 return "deny", "HELD"
-            strict = decision["failing_tainted"] and any(
-                c in ("H3_PINNED_MISMATCH", "H4_TAINTED_GUARDED") for c in decision["reasons"])
-            slot = first.get("slot")
-            repin_ok = code in REPINNABLE and slot in (sink.get("guarded") or [])
-            held_value = args[slot]["value"] if slot and slot in args else None
-            action, value = self.principal.resolve_l0(code, tool, not strict, repin_ok, held_value)
-            if action in ("approve_once", "repin"):
-                self.state.apply({"scope": item, "to": "RUN", "session": s.sid}, "H")
-                extra = None
-                if action == "repin":
-                    args[slot] = {"value": value, "label": L.top(), "repinned": True}
-                    extra = {"slot": slot, "value": value}
-                self._resolve_log(case, action, ref, first["scope"], extra)
-                remaining = [d for d in remaining
-                             if d["code"] in SESSION_CODES or d["code"] == "S0_SCOPE_HELD"]
+            if kind == "session":
+                if self._settle_session(codes, case, ref) == "close":
+                    return "deny", "SESSION_ENDED"
                 continue
-            self.state.apply({"scope": item, "to": "CLOSED", "session": s.sid}, "H")
-            self._resolve_log(case, "deny", ref, first["scope"])
-            self._log("DENY", first["scope"], ref, {"primary": code}, codes)
-            if first["scope"] == "L0":
-                self._count_deny(tool, code)
-            return "deny", "NEEDS_DECLARATION" if code == "H1_NO_DECLARATION" else "NOT_PERMITTED"
+            coarse = self._settle_action(decision, group, codes, case, item, tool, sink, args, ref)
+            if coarse is not None:
+                return "deny", coarse
         return "allow", None
+
+    def _settle_action(self, decision, group, codes, case, item, tool, sink, args, ref):
+        """One principal decision for the action group. Returns None (proceed) or the coarse code."""
+        s = self.session
+        first = group[0]
+        approve_ok = not (decision["failing_tainted"] and any(c in NO_APPROVE_WHEN_TAINTED for c in codes))
+        slot = next((d["slot"] for d in group if d.get("slot")), None)
+        repin_ok = all(c in REPINNABLE for c in codes) and slot in (sink.get("guarded") or [])
+        held_value = args[slot]["value"] if slot and slot in args else None
+        action, value = self.principal.resolve_l0(first["code"], tool, approve_ok, repin_ok, held_value)
+        if action in ("approve_once", "repin"):
+            self.state.apply({"scope": item, "to": "RUN", "session": s.sid}, "H")
+            extra = None
+            if action == "repin":
+                args[slot] = {"value": value, "label": L.top(), "repinned": True}
+                extra = {"slot": slot, "value": value}
+            self._resolve_log(case, action, ref, first["scope"], extra)
+            return None
+        self.state.apply({"scope": item, "to": "CLOSED", "session": s.sid}, "H")
+        self._resolve_log(case, "deny", ref, first["scope"])
+        self._log("DENY", first["scope"], ref, {"primary": first["code"]}, codes)
+        if first["code"] in PROBE_CODES:
+            self._count_probe_outcome(tool)
+        return "NEEDS_DECLARATION" if first["code"] == "H1_NO_DECLARATION" else "NOT_PERMITTED"
 
     def _apply_debits(self, debits):
         s = self.session
@@ -895,14 +927,16 @@ class Gateway:
         s.tokens[token["nonce"]] = token
         return token
 
-    def _token_ok(self, token, args):
+    def _token_ok(self, token, args, late_ok=False):
+        """Issued, not revoked, signed, unexpired (late_ok: the gate itself held the item past it),
+        and the args hash unchanged."""
         s = self.session
         if not token or token.get("nonce") not in s.tokens:
             return False
         core = {k: v for k, v in token.items() if k != "sig"}
         if not check_sig(self.gate_key, H(core), token.get("sig")):
             return False
-        if self.t > token["expires_t"]:
+        if self.t > token["expires_t"] and not late_ok:
             return False
         return H({k: v["value"] for k, v in args.items()}) == token["args_hash"]
 
@@ -1039,15 +1073,17 @@ class Gateway:
             self._release(item)
 
     def _drain(self, s):
-        """Advance the clock to each release time in order; anything still held is discarded."""
-        for _ in range(2):
-            for item in self.outbox.open_items(s.sid):
-                if s.status != "RUN":
-                    break
-                self.t = max(self.t, item["release_at"])
-                self._release(item)
+        """Advance the clock to each release time in order. Every step is a release pass, so an
+        item held on a scope is re-checked each time; anything still held at the end is discarded
+        (and the session will end CLOSED)."""
+        while s.status == "RUN":
+            self._release_due(s)
+            later = [i["release_at"] for i in self.outbox.open_items(s.sid) if i["release_at"] > self.t]
+            if not later or s.status != "RUN":
+                break
+            self.t = min(later)
         for item in self.outbox.open_items(s.sid):
-            if item["status"] == "held":
+            if item["status"] == "held" and s.status == "RUN":
                 s.scope_discard = True
             self._discard(item, "never cleared by drain")
 
@@ -1063,19 +1099,20 @@ class Gateway:
             if self.state.effective(name) != "RUN":
                 if item["status"] != "held":
                     item["status"] = "held"
-                    case = self._raise_hold(level_of(name), name, "S0_SCOPE_HELD", ["S0_SCOPE_HELD"],
-                                            item["stage_id"], {"stage_id": item["stage_id"]})
+                    item["was_held"] = True
+                    case = self._raise_hold(level_of(name), name, S0, [S0],
+                                            item["stage_id"], {"stage_id": item["stage_id"], "at": "release"})
                     self._finalize(case)
                 return
         item["status"] = "pending"
-        if not self._token_ok(item["token"], item["args"]):
+        if not self._token_ok(item["token"], item["args"], late_ok=item.get("was_held", False)):
+            self.t4_items.add(item["stage_id"])
             self._trip_session("T4_ARGS_MISMATCH", item["stage_id"], {"stage_id": item["stage_id"]})
             return
         token = canary_violation(self.sinks[item["tool"]], item["args"], item["payload_text"], self.canaries)
         if token is not None:
-            origins = self._cited_origins(s.context, [a["value"] for a in item["args"].values()])
             self._trip_session("T2_CANARY", item["stage_id"], {"stage_id": item["stage_id"], "at": "release"},
-                               origins=origins)
+                               origins=self._cited_origins(s.context))
             return
         if item["tier"] >= 3:
             scope = "L0:%s:%s:confirm" % (s.sid, item["stage_id"])

@@ -1,19 +1,21 @@
-"""One command for the whole Duelist Ledger v0 run.
+"""One command for the whole Duelist Ledger v0 run (contract v0.1).
 
 In plain words:
-  py -3.14 run.py                         runs the unit tests, then every scenario in scenarios/
-                                          (or the smoke fixtures in tests/fixtures when that
-                                          folder is empty), and writes out/report.md.
+  py -3.14 run.py                         runs the unit tests, then every scenario in
+                                          scenarios/v0.1/ (else scenarios/, else the smoke
+                                          fixtures in tests/fixtures), and writes out/report.md.
   py -3.14 run.py --scenarios <dir>       same, on another scenario folder.
   py -3.14 run.py --scenarios <dir> --reveal <expectations.json> --salt <salt.txt>
-                                          first checks the seal in sealed/expectations.seal.json;
+                                          first checks the seal (default
+                                          sealed/v0.1/expectations.seal.json, or --seal <path>);
                                           stops at once if it does not match; otherwise also
                                           compares every sealed expectation and lists mismatches.
   py -3.14 run.py --subprocess            also runs one demo session over a real stdio pipe.
 
-Per-run working files go in short folders under the system temp directory; only summaries
-go in out/. Exit code is non-zero only if unit tests fail, an invariant breaks in a strict
-mode, or the seal does not verify. Expectation mismatches are findings, not failures.
+Relative paths are taken from the current folder, or from this build's folder if they are not
+found there. Per-run working files go in short folders under the system temp directory; only
+summaries go in out/. Exit code is non-zero only if unit tests fail, an invariant breaks in a
+strict mode, or the seal does not verify. Expectation mismatches are findings, not failures.
 """
 
 import argparse
@@ -31,7 +33,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from duelist_ledger import CAVEAT  # noqa: E402
+from duelist_ledger import CAVEAT, CONTRACT, CONTRACT_DIR  # noqa: E402
 from duelist_ledger.harness import (STRICT_INVARIANT_MODES, compare, load_scenarios, modes_for,  # noqa: E402
                                     run_one, variant_count)
 from duelist_ledger.metrics import compute  # noqa: E402
@@ -95,13 +97,29 @@ def subprocess_demo(scenarios, policy, sinks, tmp_root):
             "matches_in_process": same}
 
 
-def expectation_diff(expectations, scenarios, results):
+def resolve_path(path):
+    """A relative path is taken from the current folder, else from this build's folder."""
+    if not path or os.path.isabs(path) or os.path.exists(path):
+        return path
+    return os.path.join(ROOT, path)
+
+
+def default_scenario_dir():
+    for cand in (os.path.join(ROOT, "scenarios", CONTRACT_DIR), os.path.join(ROOT, "scenarios")):
+        if load_scenarios(cand):
+            return cand
+    return os.path.join(ROOT, "tests", "fixtures")
+
+
+def expectation_diff(expectations, scenarios, results, load_errors=()):
     mismatches, compared, matched = [], 0, 0
     ids = {str(sc.get("id")) for sc in scenarios}
+    rejected = {str(e["scenario"]): e["error"] for e in load_errors}
     for sid, modes in sorted((expectations.get("scenarios") or {}).items()):
         if str(sid) not in ids:
+            actual = "load error: %s" % rejected[str(sid)] if str(sid) in rejected else "not found"
             mismatches.append({"scenario": sid, "mode": "*", "variant": "*", "field": "__scenario__",
-                               "expected": "present", "actual": "not found", "classification": "UNCLASSIFIED"})
+                               "expected": "present", "actual": actual, "classification": "UNCLASSIFIED"})
             continue
         for mode, fields in sorted((modes or {}).items()):
             runs = [r for r in results if str(r["scenario"]) == str(sid) and r["mode"] == mode]
@@ -120,11 +138,13 @@ def expectation_diff(expectations, scenarios, results):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Duelist Ledger v0")
-    ap.add_argument("--scenarios", help="scenario folder (default: scenarios/, or tests/fixtures if empty)")
+    ap = argparse.ArgumentParser(description="Duelist Ledger v0 (contract v%s)" % CONTRACT)
+    ap.add_argument("--scenarios", help="scenario folder (default: scenarios/%s/, else scenarios/, "
+                                        "else tests/fixtures)" % CONTRACT_DIR)
     ap.add_argument("--reveal", help="revealed expectations.json")
     ap.add_argument("--salt", help="revealed salt.txt")
-    ap.add_argument("--seal", default=os.path.join(ROOT, "sealed", "expectations.seal.json"))
+    ap.add_argument("--seal", default=os.path.join("sealed", CONTRACT_DIR, "expectations.seal.json"),
+                    help="seal file (default: sealed/%s/expectations.seal.json)" % CONTRACT_DIR)
     ap.add_argument("--out", default=os.path.join(ROOT, "out"))
     ap.add_argument("--skip-tests", action="store_true")
     ap.add_argument("--subprocess", action="store_true", help="also run one demo session over a stdio pipe")
@@ -139,23 +159,30 @@ def main(argv=None):
 
     print(CAVEAT)
     print()
+    print("Contract v%s" % CONTRACT)
     started = time.perf_counter()
     expectations, seal_info = None, {"status": "not requested"}
     if args.reveal or args.salt:
         if not (args.reveal and args.salt):
             print("ERROR: --reveal and --salt must be given together.")
             return 2
-        res = check_reveal_files(args.seal, args.reveal, args.salt)
+        seal_path = resolve_path(args.seal)
+        res = check_reveal_files(seal_path, resolve_path(args.reveal), resolve_path(args.salt))
         if not res["ok"]:
             print("SEAL CHECK FAILED - aborting before any comparison.")
-            print("  seal file: %s" % args.seal)
+            print("  seal file: %s" % seal_path)
             print("  reason:    %s" % res["error"])
             print("  sealed:    %s" % res["commit"])
             print("  computed:  %s" % res["computed"])
             return 3
         expectations = res["expectations"]
-        seal_info = {"status": "verified (%s salt reading)" % res["salt_reading"], "commit": res["commit"]}
+        seal_info = {"status": "verified (%s salt reading)" % res["salt_reading"], "commit": res["commit"],
+                     "seal_file": seal_path, "expectations_version": expectations.get("version")}
         print("Seal verified: %s" % res["commit"])
+        if str(expectations.get("version")) != CONTRACT:
+            seal_info["version_note"] = "expectations say version %r; this build is contract v%s" % (
+                expectations.get("version"), CONTRACT)
+            print("  NOTE: %s" % seal_info["version_note"])
 
     if args.skip_tests:
         tests = {"ok": True, "skipped": True, "run": 0, "failures": 0, "errors": 0}
@@ -167,15 +194,15 @@ def main(argv=None):
         if not tests["ok"]:
             print(tests["output_tail"])
 
-    scen_dir = args.scenarios
-    if not scen_dir:
-        default = os.path.join(ROOT, "scenarios")
-        scen_dir = default if load_scenarios(default) else os.path.join(ROOT, "tests", "fixtures")
-    scenarios = load_scenarios(scen_dir)
+    scen_dir = resolve_path(args.scenarios) if args.scenarios else default_scenario_dir()
+    load_errors = []
+    scenarios = load_scenarios(scen_dir, errors=load_errors)
     policy, sinks = load_config(os.path.join(ROOT, "config"))
     tmp_root = tempfile.mkdtemp(prefix="dl", dir=tempfile.gettempdir())
     results, n = [], 0
     print("Running %d scenarios from %s ..." % (len(scenarios), scen_dir))
+    for err in load_errors:
+        print("  LOAD ERROR (scenario skipped): %s" % err["error"])
     for sc in scenarios:
         for mode in modes_for(sc):
             for v in range(variant_count(sc)):
@@ -187,11 +214,11 @@ def main(argv=None):
     strict_viol += sum(1 for r in results if r["mode"] in STRICT_INVARIANT_MODES and not r["summary"]["invariants_ok"])
     mismatches, match = (None, None)
     if expectations is not None:
-        mismatches, match = expectation_diff(expectations, scenarios, results)
+        mismatches, match = expectation_diff(expectations, scenarios, results, load_errors)
     exit_code = 0 if tests["ok"] and strict_viol == 0 else 1
     payload = {
-        "caveat": CAVEAT, "unit_tests": tests, "seal": seal_info, "scenario_dir": scen_dir,
-        "scenario_count": len(scenarios), "runs": results, "metrics": compute(results),
+        "caveat": CAVEAT, "contract": CONTRACT, "unit_tests": tests, "seal": seal_info, "scenario_dir": scen_dir,
+        "scenario_count": len(scenarios), "load_errors": load_errors, "runs": results, "metrics": compute(results),
         "strict_invariant_violations": strict_viol, "mismatches": mismatches,
         "expectation_match": match, "subprocess_demo": demo, "exit_code": exit_code,
         "seconds": round(time.perf_counter() - started, 2),
