@@ -25,6 +25,7 @@ Any success-rate number in `out/report.md` is measured against the project's own
   - 1,550 runs, 3,445/3,445 decisions replayed, 0 invariant violations.
   - **10,920 / 10,955 expected fields matched (99.7%).** All 35 mismatches are one field of one scenario (X2 `adversary_success`, every mode and variant).
 - **Classification v0.1:** 1 spec ambiguity (C4: the `bypass_write` effect schema, which explains all 35 mismatches), 0 expectation errors, 0 scenario bugs, and 1 pre-registered gate bug (G1) that the suite never exercised. Six clauses matched only because both tracks assumed the same unpinned reading. See `docs/CONTRADICTIONS.md`. Author decisions for v0.2 are listed there.
+- **Contract v0.2** (amendment A3, post-reveal): resolves every v0.1 finding, pins Track B's readings, adds five plan scenarios and an entry-path coverage rule, and strengthens the protocol (known-nonconformance pre-registration, prompts are not contract, cross-family Track B). Audited pre-seal. Tag `contract-v0.2` (`4cb7354`). A fresh blind two-track run on v0.2 is pending.
 
 ## Quickstart
 

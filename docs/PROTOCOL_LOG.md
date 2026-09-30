@@ -1,5 +1,12 @@
 # Protocol Log
 
+## v0.2 run
+
+| When (2026-09-30) | Event | Material exposed | Verdict |
+|---|---|---|---|
+| 08:01 EDT (12:01 UTC) | **Contract v0.2 published.** Amendment A3 is at commit `4cb7354`, tagged `contract-v0.2`. Author decisions 13–16 taken with the recommended defaults. Before tagging, one adversarial reviewer (Opus 5.5, read-only) audited the draft; its findings are A3 items 26–30, all fixed in the draft. | — | Pins the contract for the v0.2 run. |
+| after tag | **Track folders prepared by the bridge.** `duelist-ledger-v0.2-track-a` holds the spec, plan and protocol written from the tag (sha256 `a0bda029…`, `ee7597a2…`, `c36fd260…`), plus an empty `private/`. `duelist-ledger-v0.2-track-b` holds the spec and protocol from the tag plus the published v0.1 build from `64e33e5`, byte-identical, and deliberately no scenarios, results, plan, prompts, contradiction record or amendment log. A leak scan found only the spec's and the protocol's own references. The v0.1 unit tests pass in the folder. Both folders carry the web-deny, ask-mode settings. The bridge wrote both prompts; they point at the changed sections and restate no semantics, and they will be published with each track's commit. | — | Ready. Planned models: Track A on Fable 5.1; Track B on a non-Claude coding assistant if the author has one, else another Claude model, to be recorded. |
+
 ## v0.1 run
 
 | When (2026-09-29) | Event | Material exposed | Verdict |
