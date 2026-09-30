@@ -1,6 +1,13 @@
 # Protocol Log
 
-## v0.2 run
+## v0.3 run
+
+| When (2026-09-30) | Event | Material exposed | Verdict |
+|---|---|---|---|
+| 09:14 EDT (13:14 UTC) | **Contract v0.3 published.** Amendment A4 (the author's eight design decisions) at commit `431a14a`, tagged `contract-v0.3`. The v0.2 contract was never sealed against. | — | Pins the contract for the next run. |
+| after tag | **Track folders refreshed by the bridge.** The unused v0.2 folders were renamed to `duelist-ledger-v0.3-track-a` and `duelist-ledger-v0.3-track-b` and their contract files rewritten from the tag (sha256 `e48af7c6…`, `96e196db…`, `c4d4f90c…`). Track B's starting build is still the published v0.1 build `64e33e5`, byte-identical; no build was made for v0.2. Both prompts rewritten for v0.3; they point at the amended sections and restate no semantics. | — | Ready. Planned models: Track A on Fable 5.1; Track B on a non-Claude coding assistant if the author has one, else another Claude model, to be recorded. |
+
+## v0.2 run (contract published; no run)
 
 | When (2026-09-30) | Event | Material exposed | Verdict |
 |---|---|---|---|
