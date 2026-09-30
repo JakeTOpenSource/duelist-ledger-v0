@@ -1,8 +1,8 @@
-# Track Separation Protocol (v0.2)
+# Track Separation Protocol (v0.3)
 
 The two-track method only works if the tracks are actually blind. This protocol is the chain of custody. Both tracks read it alongside BUILD_SPEC.md.
 
-v0.2 = v0.1 plus the custody lessons from the v0.1 run (`docs/PROTOCOL_LOG.md`): known nonconformances are pre-registered, prompts are not contract, helper agents stay inside the track folder, the bridge never edits gate code before a reveal, and Track B runs on another model family where one is available. See amendment A3 in `docs/AMENDMENTS.md`. (v0.1 added the v0 custody lessons and the independence note, amendment A2.)
+v0.3 = v0.2 plus two notes from amendment A4: a build that omits the deferred PAUSE (spec sec. 5.7) declares it as a known nonconformance, and the two-house run of spec sec. 19 is a separate scope with its own custody record. The custody rules are otherwise unchanged. v0.2 = v0.1 plus the custody lessons from the v0.1 run (`docs/PROTOCOL_LOG.md`): known nonconformances are pre-registered, prompts are not contract, helper agents stay inside the track folder, the bridge never edits gate code before a reveal, and Track B runs on another model family where one is available. See amendment A3 in `docs/AMENDMENTS.md`. (v0.1 added the v0 custody lessons and the independence note, amendment A2.)
 
 ## The rule
 
@@ -56,3 +56,4 @@ GitHub's commit timestamps then prove the order independently of anyone's accoun
 - The bridge records each one in `docs/PROTOCOL_LOG.md` **before** the implementation is published, and publishes the build as delivered.
 - At the reveal, a mismatch traceable to a declared nonconformance is classified gate-bug with the pre-registration cited. A declared nonconformance the suite never exercises is reported as **unexercised**, not as absent, and the plan gains a scenario for it.
 - Track A's report lists the spec and plan gaps it found in the same way. Both lists are part of the run's record.
+- Items the contract marks **deferred** (in v0.3, PAUSE) are declared the same way when a build omits them. They are expected, not faults, and are reported as unexercised.

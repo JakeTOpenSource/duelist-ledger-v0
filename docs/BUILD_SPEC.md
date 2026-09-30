@@ -1,16 +1,16 @@
-# Duelist Ledger v0: Build Spec (contract v0.2)
+# Duelist Ledger v0: Build Spec (contract v0.3)
 
 This spec is the contract between two blind tracks. Track A writes the scenarios and seals the expected outcomes. Track B builds the gate. Neither sees the other's work until the reveal. Where this spec is silent or ambiguous, the resulting mismatch is classified as spec-ambiguity. Nobody edits a mismatch away.
 
-**Contract version.** v0.2 is contract v0.1 (tag `contract-v0.1`, commit `aa4b65c`) plus the post-reveal amendment A3 (`docs/AMENDMENTS.md`). A3 resolves everything recorded in `docs/CONTRADICTIONS.md` for the v0.1 run: the spec ambiguity C4, the pre-registered gate bug G1, and the clauses both v0.1 tracks settled by the same unpinned assumption (L3–L9), which are now normative text. Results obtained under v0 and v0.1 stay tied to their contracts. A blind claim under v0.2 requires a fresh two-track run. (v0.1 was contract v0, commit `09d26a6`, plus amendment A2.)
+**Contract version.** v0.3 is contract v0.2 (tag `contract-v0.2`, commit `4cb7354`) plus the design amendment A4 (`docs/AMENDMENTS.md`), which applies the author's eight design decisions of 2026-09-30: the agent link, effect tokens, typed slots, containment, hard deny with a declaration-time allowlist, PAUSE, the attacker-triggered-restriction residual, and foreign labels. Results obtained under v0, v0.1 and v0.2 stay tied to their contracts; no run was sealed under v0.2. A blind claim under v0.3 requires a fresh two-track run. (v0.2 was v0.1 plus the post-reveal amendment A3; v0.1 was contract v0, commit `09d26a6`, plus amendment A2.)
 
-**Caveat.** This line opens every report. v0 runs scripted, maximally compliant agents on one Windows account. Mediation between processes is by convention, and signatures are HMAC stand-ins. It demonstrates the gate's semantics and the shape of the security/utility trade-off. It does NOT measure real-world attack success, physical mediation, or non-repudiation.
+**Caveat.** This line opens every report. v0 runs scripted, maximally compliant agents on one Windows account. Mediation between processes is by convention, and signatures are Ed25519 only when the optional package of sec. 0 is present, else HMAC stand-ins; the report states which ran. It demonstrates the gate's semantics and the shape of the security/utility trade-off. It does NOT measure real-world attack success, physical mediation, or non-repudiation. (A4.4)
 
 **Riskiest assumption under test.** An agent commits a declaration before it reads any untrusted data. The declaration is checked against a blind house envelope, and a small deterministic gate enforces it. Under that setup, effects outside the envelope are blocked before they happen, and benign tasks still finish with a HOLD load a human could carry. That includes data-dependent tasks, where the destination is only known after reading untrusted data.
 
 ## 0. Ground rules
 
-- Python 3.14, standard library only. No pip, no network, no API keys, no LLM calls.
+- Python 3.14, standard library only, plus at most one optional package for Ed25519 (`cryptography` or `pynacl`). No network, no API keys, no LLM calls. When the package is absent the gateway signs with HMAC stand-ins and the caveat line says so (sec. 4). (A4.4)
 - One command: `py -3.14 run.py` (or `python run.py`), or double-click `run.bat`, which sets `PYTHONUTF8=1`.
 - The whole run finishes in under ~2 minutes on a laptop.
 - Test fixtures are inert structured records. There is no natural-language instruction text anywhere. External addresses use reserved `.invalid` domains: `home.invalid` (principal), `corp.invalid` (internal), `partner.invalid` (counterparties/vendors), `outside.invalid` (adversary-chosen). Secrets are `CANARY-*` marker strings.
@@ -46,7 +46,7 @@ duelist-ledger-v0/
     metrics.py    # metrics + Wilson CI + rule-of-three
     report.py     # out/report.md + out/results.json
   scenarios/<version>/            # Track A (published at the reveal)
-  sealed/<version>/expectations.seal.json   # Track A: hash only, e.g. sealed/v0.2/
+  sealed/<version>/expectations.seal.json   # Track A: hash only, e.g. sealed/v0.3/
   results/<version>/run<N>/       # published run outputs, unedited
   tests/          # Track B's unittest suite (own fixtures, never scenarios/)
   out/            # generated
@@ -59,7 +59,7 @@ The sealed expectations file and its salt live outside the repo until reveal (pa
 - `canonical(obj) = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")`
 - `H(obj) = "sha256:" + sha256(canonical(obj)).hexdigest()`
 - Seal: `commit = "sha256:" + sha256(canonical(obj) + salt_bytes).hexdigest()`, where `salt_bytes` is the exact bytes of the salt file. The seal file is JSON whose `commit` field holds that string; its other fields are informational.
-- Signatures are HMAC-SHA256 stand-ins. Each run generates two keys, a gate key and a witness key, with `secrets.token_bytes(32)`. The witness module never receives the gate key or any handle to the ledger file.
+- Diary entries and witness heads are HMAC-SHA256 signed. Effect tokens and foreign labels are signed with Ed25519 when the optional package of sec. 0 is present, else with HMAC-SHA256 stand-ins under the gate key (sec. 4). Each run generates a gate key (with its Ed25519 signing pair when available) and a witness key with `secrets.token_bytes(32)`, and one session key per session (sec. 3.8). The witness module never receives the gate key or any handle to the ledger file. (A4.4)
 
 ## 3. Records
 
@@ -87,6 +87,8 @@ A handle argument (`{"handle": "h7"}`) carries the stored value's own label.
 
 A handle this session never received is **unresolvable**: the argument carries the value null and the current context label, and the proposal is undeclared (sec. 4).
 
+Labels are house-local. A value that crosses a house boundary carries weight only if its label is signed by the issuing house's gateway (Ed25519 over the canonical pair of value digest and label) and the receiving house holds that gateway's verify key from the handshake; an unsigned or unverifiable foreign label is dropped, and the value enters as UNTRUSTED (integrity 0) with origin `house:<sender id>` and that id as `sender`. A receiving house never relaxes its own rules on a foreign label: its own envelope and flow rules apply to every effect that arrives (sec. 19).
+
 ### 3.2 Ledger entry (diary)
 
 The diary is JSONL at `<run>/house/ledger.jsonl`. Each line holds the entry fields plus hash and sig:
@@ -99,7 +101,7 @@ The diary is JSONL at `<run>/house/ledger.jsonl`. Each line holds the entry fiel
 
 `hash = H(entry without hash, sig)`; `sig = HMAC(gate_key, hash)`.
 
-Kinds: SESSION_OPEN, DECLARE, DECLARE_REJECT, AMEND, PROPOSE, AUTHORIZE, ESCROW, RELEASE, DISCARD, EXECUTE, VERIFY, HOLD, RESOLVE, DENY, TRIP, FLAG, CHALLENGE, CASE, QUARANTINE, ANCHOR, ALARM, ANNOTATION, SESSION_CLOSE.
+Kinds: SESSION_OPEN, DECLARE, DECLARE_REJECT, AMEND, PROPOSE, AUTHORIZE, ESCROW, RELEASE, DISCARD, EXECUTE, VERIFY, HOLD, RESOLVE, DENY, TRIP, CONTAIN, LINK_REJECT, FLAG, CHALLENGE, CASE, QUARANTINE, ANCHOR, ALARM, ANNOTATION, SESSION_CLOSE.
 
 Content is never stored raw. Content arguments and results are stored as digests. Guarded-slot values are stored in clear, because they are destinations.
 
@@ -111,17 +113,19 @@ AUTHORIZE body = `{"inputs": <full decide() input object>, "decision": <decide()
 
 ### 3.3 Sinks (config/sinks.json)
 
-| tool | sink_class | rev | persistent | guarded | content | dest_slot | base_tier |
-|------|-----------|-----|-----------|---------|---------|-----------|-----------|
-| read_inbox | READ_EXTERNAL | R0 | no | - | - | - | 0 |
-| read_file | READ_INTERNAL | R0 | no | path | - | - | 0 |
-| fetch_web | READ_EXTERNAL | R0 | no | url | - | - | 0 |
-| read_memory | READ_INTERNAL | R0 | no | key | - | - | 0 |
-| write_workspace | WRITE_WORKSPACE | R1 | no | path | content | - | 1 |
-| send_email | EXTERNAL_SEND | R2 | no | to | body, attach | to | 1 |
-| pay | PAYMENT | R3 | no | payee, amount | memo | payee | 2 |
-| persist_memory | PERSIST_MEMORY | R2 | yes | key | content | - | 2 |
-| schedule | PERSIST_SCHEDULE | R2 | yes | action, target | - | target | 2 |
+| tool | sink_class | rev | persistent | guarded | content | dest_slot | base_tier | slot types |
+|------|-----------|-----|-----------|---------|---------|-----------|-----------|-----------|
+| read_inbox | READ_EXTERNAL | R0 | no | - | - | - | 0 | - |
+| read_file | READ_INTERNAL | R0 | no | path | - | - | 0 | path: path |
+| fetch_web | READ_EXTERNAL | R0 | no | url | - | - | 0 | url: url |
+| read_memory | READ_INTERNAL | R0 | no | key | - | - | 0 | key: key |
+| write_workspace | WRITE_WORKSPACE | R1 | no | path | content | - | 1 | path: path, content: text |
+| send_email | EXTERNAL_SEND | R2 | no | to | body, attach | to | 1 | to: address, body: text, attach: path |
+| pay | PAYMENT | R3 | no | payee, amount | memo | payee | 2 | payee: payee, amount: amount, memo: text |
+| persist_memory | PERSIST_MEMORY | R2 | yes | key | content | - | 2 | key: key, content: text |
+| schedule | PERSIST_SCHEDULE | R2 | yes | action, target | - | target | 2 | action: action, target: address |
+
+Every slot has a type. T1_HOUSE scans path-typed values only, never text (sec. 4). `dest_class` applies to address-typed and payee-typed values; `{"max": m}` applies to amount-typed slots only; path-typed pinned values compare as strings.
 
 Reversibility classes. R0 = read. R1 = reversible. R2 = stageable (escrow). R3 = irreversible (escrow plus the checks in sec. 5).
 
@@ -136,7 +140,7 @@ Read results:
 
 ### 3.4 Policy (config/policy.json), effective policy and dest classes
 
-Defaults. A scenario may override only budgets, tier3_money, fuse, escrow_window, asset_flows.
+Defaults. A scenario may override only budgets, tier3_money, fuse, escrow_window, asset_flows, contain_limit. `contain_limit` is a deployer-set policy parameter; 3 is its default, not a constant.
 
 ```json
 {
@@ -151,7 +155,8 @@ Defaults. A scenario may override only budgets, tier3_money, fuse, escrow_window
  "probe_limit": 3,
  "strike_hold": 3,
  "p_source": {"per_session": 2, "per_scenario": 5},
- "common_mode_sessions": 3
+ "common_mode_sessions": 3,
+ "contain_limit": 3
 }
 ```
 
@@ -179,7 +184,9 @@ An asset tag with no asset_flows entry may flow anywhere.
 
 `pinned`: slot -> list of allowed values. `free_guarded`: slot -> registry name, or `{"max": number}` for numeric slots. `narrative` is annotation only, never authorizes.
 
-**Validation.** Every guarded slot of the step's tool must appear in pinned or free_guarded. An unknown tool, or a missing guarded slot, is a DECLARE_REJECT with code SCHEMA. That is not a probe and not a HOLD, and the agent may resubmit.
+A step has two further optional fields. `"attended": true` (default false) makes a tainted H3/H4 on that step a HOLD resolved by repin only, instead of the hard deny of sec. 4; approve_once is never available for a tainted H3 or H4. `"derived": {"<slot>": {"sender_of": "<step_id>"}}` binds a guarded address-typed slot to a rule instead of a value: the proposal's value passes when it equals the `sender` recorded by the world for at least one value that a call of the named read step (a declared `read_inbox` or `fetch_web` step) delivered to this session; otherwise the reason is H3_PINNED_MISMATCH, with `failing_tainted` from the argument as usual.
+
+**Validation.** Every guarded slot of the step's tool must appear in exactly one of pinned, free_guarded and derived; anything else, an unknown tool, or a missing guarded slot, is a DECLARE_REJECT with code SCHEMA. That is not a probe and not a HOLD, and the agent may resubmit.
 
 **Stamp.** The gateway, not the agent, stamps `declared_before_taint` on the committed declaration.
 
@@ -199,7 +206,8 @@ An asset tag with no asset_flows entry may flow anywhere.
 (a) every step's tool is in allowed_tools;
 (b) every pinned value v at tool.slot satisfies one of: v is listed in `destinations[tool.slot]`; that list contains `"registry:R"` and v in R; the slot is numeric (amount), and v <= max_money;
 (c) every free_guarded registry R at tool.slot requires `"registry:R"` in `destinations[tool.slot]`. A `{"max": m}` spec requires m <= max_money;
-(d) for each tool, the sum of max_calls is <= envelope.max_calls[tool], where a missing entry counts as 0 (deliberate default-deny: a tool that has no max_calls entry in the envelope cannot be declared).
+(d) for each tool, the sum of max_calls is <= envelope.max_calls[tool], where a missing entry counts as 0 (deliberate default-deny: a tool that has no max_calls entry in the envelope cannot be declared);
+(e) every derived slot (sec. 3.5) at tool.slot requires `"derived:sender_of"` in `destinations[tool.slot]`.
 
 **On failure.** DECLARE_REJECT with reason H0_ENVELOPE, logged as a HOLD scoped to the declaration: `L1:decl:<session>:<n>`, a child of the session scope. The scripted principal resolves it. approve_once is available, and principal rules match on reason `H0` and the tool of the first violating step. The default is deny.
 - A denied H0 rejects **that declaration only**. The session stays open, and the agent receives only the coarse code NOT_PERMITTED.
@@ -211,12 +219,16 @@ An asset tag with no asset_flows entry may flow anywhere.
 ### 3.7 Proposal (agent -> gateway)
 
 ```json
-{"seq":int, "step_id":str|null, "tool":str, "args":{slot: literal | {"handle":id}}}
+{"seq":int, "step_id":str|null, "tool":str, "args":{slot: literal | {"handle":id}}, "mac":str}
 ```
 
 `seq` numbers proposals only (not DECLARE, AMEND, CHALLENGE, NARRATE or FINISH), starting at 1 in each session, and must equal the previous seq + 1. Any other value, higher or lower, is a gap: a HOLD with reason SEQ_GAP on scope L2 agent->gate. The gapped proposal is logged as PROPOSE and is not decided (no AUTHORIZE, no fuse heat); the agent receives HELD and continues with its next op, and the expected seq becomes the received seq + 1. The link stays held until the first reconcile after the gap that raises no new RECEIPT_GAP and no new T3_BYPASS (sec. 5.1). While it is held, R2/R3 actions get S0_SCOPE_HELD on that link; R0/R1 actions proceed. In pass-through, seq is ignored.
 
 Apart from a SEQ_GAP, a proposal is never refused before decide(). One that names a tool absent from the sink table, or that carries an unresolvable handle (sec. 3.1), is an **undeclared proposal**: it is decided, logged and counted per sec. 4.
+
+### 3.8 Agent link
+
+The gateway accepts a session's messages only over the transport it bound at SESSION_OPEN: the pipe of the agent process it spawned, the connection it accepted for that session, or, in the harness, the direct call from the agent object it was given. At SESSION_OPEN it generates a 32-byte session key with `secrets.token_bytes(32)`, hands it to the agent once over that transport, and logs `H(session_key)` in the SESSION_OPEN body. Every agent message carries `"mac"`, the HMAC-SHA256 under the session key of the canonical message without the mac. A message whose mac does not verify, or that arrives over another transport, is logged as LINK_REJECT (actor gateway, scope L2:agent->gate, body `{reason}`), and nothing else happens: no decide(), no state change, no HOLD, no case, no strike, no probe, and the clock does not advance. The sender receives LINK_REJECT. The check is on in every mode, pass-through included; it is a pipeline-integrity sensor, not a judgment of the proposal. The seq rules of sec. 3.7 apply after the mac verifies.
 
 ## 4. decide(): pure, deterministic, replayable
 
@@ -232,11 +244,11 @@ Apart from a SEQ_GAP, a proposal is never refused before decide(). One that name
 
 **Inputs** (all logged in AUTHORIZE): mode, policy, sinks, registries; declaration (with per-step used-call counts) or null; proposal, with each arg resolved to {value, label}, plus the payload label (join of all content-arg labels and attached-file labels) and the payload text (the content-arg values plus attached-file content); context_label, session_tainted; scope_states: effective state for the session, link and org keys this action touches; counters, session_counters, fuse_state, tier_floor, t; untrusted_strings: a list of {origin, sender, strings} taken from delivered UNTRUSTED results, where strings are the email addresses, URLs and payee ids found in the result's content or in any field of the result's directive records; rules_enabled: e.g. `{"R1": false}`.
 
-**Rule order.** Any T-rule wins, and the first T-rule found is final. This holds before DECLARE too: decide() then runs with declaration = null, so T1/T2 fire ahead of H1. If no T-rule fires, all H-reasons are collected. Any H-reason gives HOLD, with primary = the first reason in this order, except that a mixed-reason HOLD takes its primary from the first group settled (sec. 5.1). If there are no reasons, the outcome is ALLOW (R0/R1) or ESCROW (R2/R3). A HOLD whose reasons need different resolvers is settled per sec. 5.1.
+**Rule order.** Any T-rule wins, and the first T-rule found is final. This holds before DECLARE too: decide() then runs with declaration = null, so T1/T2 fire ahead of H1. If no T-rule fires, all H-reasons are collected. **Hard deny.** If the reasons include H3 or H4 with failing_tainted true and the proposal's step is not attended (sec. 3.5), the outcome is DENY with no resolver, whatever other reasons are present: no group is settled and the session is untouched. The DENY's primary follows the mixed-reason primary rule of sec. 5.1 (the first reason, in rule-table order, of the first group in the order S0, session, action), so [S0, tainted H3] gives a DENY with primary S0. This was mode A7's rule in v0.2 and is now the default in every gated mode (A4.4). Otherwise any H-reason gives HOLD, with primary = the first reason in this order, except that a mixed-reason HOLD takes its primary from the first group settled (sec. 5.1). If there are no reasons, the outcome is ALLOW (R0/R1) or ESCROW (R2/R3). A HOLD whose reasons need different resolvers is settled per sec. 5.1.
 
 | code | condition | outcome / scope |
 |------|-----------|----------------|
-| T1_HOUSE | any argument value (guarded, content, or attach path) starts with a house_prefixes entry | TRIP / L1 |
+| T1_HOUSE | any path-typed argument value (sec. 3.3) starts with a house_prefixes entry; text-typed values are never scanned (A4.4) | TRIP / L1 |
 | T2_CANARY | the payload text contains a canary token, and the destination (dest_slot value, or memory:\<key\> for persist_memory) is not in that canary's audience | TRIP / L1 |
 | H1_NO_DECLARATION | no committed declaration | HOLD / L0 |
 | H2_NOT_DECLARED | step_id unknown, tool != step tool, or the step's used calls >= max_calls; or the proposal is undeclared (an unknown tool, or an unresolvable handle) | HOLD / L0 |
@@ -252,11 +264,13 @@ Apart from a SEQ_GAP, a proposal is never refused before decide(). One that name
 
 **Undeclared proposals** (an unknown tool, or an unresolvable handle; sec. 3.7). decide() still runs, and the AUTHORIZE entry is logged, but only four rules are evaluated: T1 over every literal argument value, T2 over the literal content (a null destination is in no audience), then H1 before DECLARE or H2 after it. No other rule runs, S0 is not checked, the tier is 0, there are no debits, and the result is never a mixed-reason HOLD. Unless T1 or T2 trips, the outcome is a HOLD whose only option is deny, in every mode, A7 and the rubber stamp included, because nothing could execute. Its case is agent-violation (sec. 5.6 rule 4), so each denial adds a strike, and the per-tool probe rule of sec. 5.5 applies. The agent receives DENIED:NEEDS_DECLARATION for H1 and DENIED:NOT_PERMITTED for H2. In pass-through (sec. 12) an undeclared proposal executes nothing and receives NOT_PERMITTED.
 
+**Derived slots** (sec. 3.5). A derived slot's value passes when it equals the `sender` recorded by the world for at least one value that a call of the named read step delivered to this session; otherwise it is treated as a pinned mismatch, H3_PINNED_MISMATCH, with `failing_tainted` from the argument. The H3 row is unchanged; this defines when it applies to a derived slot.
+
 **Modes that change decide():**
 
 - A1: H4 is disabled. A tainted, out-of-registry free_guarded value passes.
 - A4: H5_BUDGET, H5_BUDGET_SESSION, H5_FUSE and the tier money band are all disabled.
-- A7 (strict): if the HOLD reasons include H3, H4 or H8 and failing_tainted, the outcome is DENY with no resolver, whatever other reasons are present: no group is settled and the session is untouched. The DENY's primary follows the mixed-reason primary rule of sec. 5.1 (the first reason, in rule-table order, of the first group in the order S0, session, action), so [S0, tainted H3] gives a DENY with primary S0. Otherwise same as V2.
+- A7 (attended): every step is treated as `attended: true` (sec. 3.5), so a tainted H3 or H4 holds for repin instead of being denied. This is the v0.2 default behavior, kept as an ablation so the cost of the hard deny stays measurable (A4.4). H8 is a HOLD in every mode. Otherwise same as V2.
 - A0 / A3: the gate is pass-through. decide() is not consulted. Sec. 12 lists exactly what is off and what stays on.
 
 **Tier.** tier = max of: the sink's base_tier; 2 if the sink is persistent; 3 if amount >= tier3_money, or if cumulative period money including this amount is >= tier3_money (skipped in A4); the session tier_floor.
@@ -269,11 +283,11 @@ Apart from a SEQ_GAP, a proposal is never refused before decide(). One that name
 
 **Fuse.** Keyed per session and sink_class, for classes listed in policy.fuse. `heat = heat * decay**(t - t_last) + 1` on each proposal of that class, before decide() runs. H5_FUSE fires when heat > threshold. Fuse state is an input to decide(), so replay uses the logged value.
 
-**Action token.** On ALLOW/ESCROW the gateway mints `{decl_step, args_hash, nonce, expires_t}`, HMAC-signed. The executor, or the escrow release, verifies that the token is valid and that the executed args_hash equals the token's. A mismatch is T4_ARGS_MISMATCH: TRIP / L1. `expires_t` = the mint time + 2 × the largest `escrow_window` value. An item held at release by S0_SCOPE_HELD does not expire while it is held: if the scope clears before the drain ends, it releases on its original token.
+**Effect token** (A4.4). On ALLOW or ESCROW the gateway mints `{tool, args_hash, decl_step, envelope_commit, policy_hash, audience, nonce, expires_t}` and signs the canonical token with its Ed25519 signing key, or with HMAC under the gate key when the optional package of sec. 0 is absent (then the receiver verifies the same way, and the caveat line says so). `args_hash` is `H` of the args with guarded values in clear and content values as digests. `audience` is the receiver's id: `world:<house_id>` in the single-house harness, the receiving house's id in the cross-house interface (sec. 19). `expires_t` = the mint time + 2 × the largest `escrow_window` value. An item held at release by S0_SCOPE_HELD does not expire while it is held: if the scope clears before the drain ends, it releases on its original token. The **receiver** verifies before applying anything: the signature under the gateway's verify key, which is published in the SESSION_OPEN body and the run manifest; `audience` equals its own id; `envelope_commit` equals the agreement it holds for this agent and session, which in the single house is the SESSION_OPEN's envelope commit; `policy_hash` equals the one it holds; the nonce is unused, so the receiver keeps every nonce it has applied; `expires_t` is later than its clock; and `args_hash` equals the hash of the args it is asked to apply. On any failure the receiver applies nothing and writes a refusal receipt `{rcpt_seq, prev, sink_class, args_digest, effect_id, refused}` with `refused` one of ARGS, SIGNATURE, AUDIENCE, ENVELOPE, POLICY, NONCE, EXPIRED. At VERIFY the gateway reads the refusal: ARGS is T4_ARGS_MISMATCH (TRIP at L1, a session trip, as before); every other code is T5_TOKEN_REFUSED: TRIP on L2 gate->world:\<sink_class\>, ALARM GATE_FAULT at L3, case sensor-fault, the item DISCARDed, the session continuing, exactly as T3 is handled (sec. 9). A claim that no effect happens without proof requires the real signatures.
 
 ## 5. Gateway lifecycle
 
-**SESSION_OPEN.** First runs `verify()` on the diary. On failure it raises ALARM plus a HOLD CHAIN (L3:org), once (sec. 9); the ALARM, the HOLD and its CASE are logged before the SESSION_OPEN entry, tagged with the new session's id, and that session's summary carries CHAIN in `holds`, sensor-fault in `pre_classes` and REFUSED in `outcomes`. Then it logs the task digest, the agent identity, and `envelope_commit = seal(envelope, salt)`, and sets the context label to PRINCIPAL. The session is refused (SESSION_CLOSE with outcome REFUSED) in two cases:
+**SESSION_OPEN.** First runs `verify()` on the diary. On failure it raises ALARM plus a HOLD CHAIN (L3:org), once (sec. 9); the ALARM, the HOLD and its CASE are logged before the SESSION_OPEN entry, tagged with the new session's id, and that session's summary carries CHAIN in `holds`, sensor-fault in `pre_classes` and REFUSED in `outcomes`. Then it logs the task digest, the agent identity, `envelope_commit = seal(envelope, salt)`, the digest of the session key and the gateway's verify key (sec. 3.8, sec. 4), and sets the context label to PRINCIPAL. The session is refused (SESSION_CLOSE with outcome REFUSED) in two cases:
 - the org scope CHAIN is held;
 - the agent identity has >= strike_hold strikes.
 
@@ -286,14 +300,14 @@ Apart from a SEQ_GAP, a proposal is never refused before decide(). One that name
 - ALLOW (R0/R1): EXECUTE -> world.apply -> receipt. Results are stored as values with handles and delivered to the agent as {handle, content, origin, sender}. The context label is updated. Then VERIFY.
 - ESCROW (R2/R3): an ESCROW entry {stage_id, release_at = t + escrow_window[tier], tier}. If the monitor is on, it reviews the item now.
 - HOLD: a HOLD entry with its scope and reasons. The scripted principal resolves it at once (sec. 6), and a RESOLVE entry is logged. approve_once / repin -> debits -> ALLOW/ESCROW as above. deny -> a DENY entry; the agent receives DENIED:\<coarse\>.
-- DENY (A7): logged; the agent receives DENIED:\<coarse\>.
+- DENY (no resolver: the hard deny of sec. 4): logged; the agent receives DENIED:\<coarse\>. (A4.4)
 - TRIP: see sec. 5.2.
 
-**Coarse codes to the agent:** NOT_PERMITTED, NEEDS_DECLARATION, HELD, DENIED, SESSION_ENDED. The agent never sees rule ids or limits.
+**Coarse codes to the agent:** NOT_PERMITTED, NEEDS_DECLARATION, HELD, DENIED, CONTAINED, LINK_REJECT, SESSION_ENDED. The agent never sees rule ids or limits.
 
-**Logical clock.** t += 1 per agent message, and that includes directive-derived proposals, amend, challenge, narrate and finish. `stop` does not advance t. After each message is processed, due escrow items (release_at <= t) go through release. On finish, the gateway drains escrow by advancing t to each release_at, in order.
+**Logical clock.** t += 1 per agent message, and that includes directive-derived proposals, amend, challenge, narrate and finish. `stop` does not advance t. Messages held by a PAUSE do not advance t (sec. 5.7). After each message is processed, due escrow items (release_at <= t) go through release. On finish, the gateway drains escrow by advancing t to each release_at, in order.
 
-**Release (second commit point).** Re-check against current state, without re-debiting: session, link and org scopes are RUN; no open HOLD on the item; the token is valid and the args_hash is unchanged (else T4); T2 canary scan again. Then, if tier == 3, the principal must confirm, as a planned HOLD with reason CONFIRM_T3. Then RELEASE -> world.apply -> receipt -> VERIFY.
+**Release (second commit point).** Re-check against current state, without re-debiting: session, link and org scopes are RUN; no open HOLD on the item; the receiver verifies the effect token (sec. 4): an argument mismatch is T4, any other refusal is T5 (A4.4); T2 canary scan again. Then, if tier == 3, the principal must confirm, as a planned HOLD with reason CONFIRM_T3. Then RELEASE -> world.apply -> receipt -> VERIFY.
 
 **Held scope at release.** If a scope is not RUN at release, one HOLD S0_SCOPE_HELD is logged on the item, at the held scope. No principal can resolve it. It is re-checked at every later release pass, since a link can clear. If it is still held when the drain ends, the item is DISCARDed.
 
@@ -302,9 +316,10 @@ Apart from a SEQ_GAP, a proposal is never refused before decide(). One that name
 **VERIFY.** Compares the receipt returned by world.apply (sink_class and args digest) with the executed effect. A mismatch is a HOLD with reason VERIFY_MISMATCH (L1). A receipt that is missing only from the receipt log is RECEIPT_GAP (sec. 9), never VERIFY_MISMATCH.
 
 **Session end.** The outcome is one of:
-- **TRIP**, if the session tripped;
-- **CLOSED**, if a session HOLD closed it, or an escrow item was discarded because a scope stayed held;
-- **ACCEPT** otherwise. That includes sessions whose items were discarded after a denied CONFIRM_T3 or MONITOR HOLD, and sessions with denied actions.
+- **TRIP**, if the session tripped (sec. 5.2);
+- **CLOSED**, if a session HOLD closed it, the contain limit closed it (sec. 5.2), or an escrow item was discarded because a scope stayed held;
+- **CONTAINED**, if at least one CONTAIN occurred (sec. 5.2) and the session neither closed nor tripped;
+- **ACCEPT** otherwise. That includes sessions whose items were discarded after a denied CONFIRM_T3 or MONITOR HOLD, and sessions with denied actions. (A4.4)
 
 Then SESSION_CLOSE and anchor.
 
@@ -313,12 +328,13 @@ Then SESSION_CLOSE and anchor.
 **Resolvers, per reason.**
 - **Action reasons** (H1, H2, H3, H4, H5_BUDGET, H6, H7, H8, H9, CHALLENGE, MONITOR, CONFIRM_T3) get one principal decision.
   - deny is always available.
-  - repin is available for H3, H4 or H8 on a guarded slot. The principal "types" a value, which then carries PRINCIPAL integrity.
-  - approve_once is available **except** in two cases: H3 or H4 with failing_tainted true; H7 while session_tainted.
+  - repin is available for H8, and for H3 or H4 on an attended step (sec. 3.5, sec. 4). The principal "types" a value, which then carries PRINCIPAL integrity. (A4.4)
+  - approve_once is available **except** for H3 or H4 with failing_tainted true, never and in no mode, and for H7 while session_tainted. (A4.4)
 - **Session-scope reasons** (H5_BUDGET_SESSION, H5_FUSE, SILENCE, VERIFY_MISMATCH) get resume or close.
   - Resuming an action-raised session HOLD lets the held action proceed, subject to its remaining reasons.
   - A resume after H5_FUSE or VERIFY_MISMATCH raises tier_floor by 1.
-  - PROBE always closes.
+  - PROBE and CONTAIN_LIMIT always close.
+- **PAUSE** (sec. 5.7) clears only by the actor who raised it.
 - **S0_SCOPE_HELD** has no principal resolver, not even the rubber stamp. At decide time the action is denied and no escrow item is created. At release, see sec. 5.
 - **L2 link HOLDs** (RECEIPT_GAP, SEQ_GAP) clear only by a deterministic predicate. SEQ_GAP clears at the first reconcile after the gap that raises no new RECEIPT_GAP and no new T3_BYPASS; an earlier receipt fault does not keep it held. RECEIPT_GAP clears only when a later reconcile finds the missing receipt (sec. 9), which in v0.x never happens. The principal cannot clear either.
 - **L3 org HOLDs** (COMMON_MODE, CHAIN) clear only by the operator. The v0.x operator never clears them.
@@ -335,9 +351,19 @@ The HOLD's `primary` is the first reason, in rule-table order, **of the first gr
 
 If a group ends in deny or close, the action does not proceed and no later group is asked; close also closes the session. If a group clears and later groups remain, one follow-on HOLD is logged per remaining group, in the same order, with primary = that group's first reason in rule-table order, reasons = that group's codes, and scope = the primary's scope. Each follow-on HOLD appears in `holds` and opens its own CASE, whose pre_class uses the decision-level `failing_tainted` and cited origins (sec. 5.6). Within the action group, principal rules are matched against the group's primary (sec. 6); approve_once is withheld when the group holds H3 or H4 with `failing_tainted` true, or H7 while session_tainted; repin is offered only when every reason in the group offers it, and it repins the slot of the group's first slot-naming reason. An action denied by the S0 group counts toward nothing: no strike, no probe (sec. 5.5). **A per-action approval never lifts a session-scope or org-scope restriction.**
 
-### 5.2 TRIP
+### 5.2 TRIP and CONTAIN
 
-Revoke all tokens and DISCARD all of the session's escrow items. No refunds. Every world artifact the session wrote while tainted (workspace files, memory entries, schedule entries) gets its label set to QUARANTINED, with a QUARANTINE entry. The session ends with outcome TRIP. There is no automatic resume, ever.
+A TRIP outcome is handled one of two ways, fixed at the moment of the trip by its case class (sec. 5.6) (A4.4):
+- **Session TRIP,** when the case is agent-violation (T1 or T2 while the session is untainted), and always for T4. As before: revoke all tokens, DISCARD every escrow item of the session with no refund, relabel QUARANTINED every world artifact the session wrote while tainted (workspace files, memory entries, schedule entries), with a QUARANTINE entry each, set the session scope to TRIP, end the session with outcome TRIP. No automatic resume, ever.
+- **CONTAIN,** when the case is injection-suspected (T1 or T2 with `failing_tainted` true, or while `session_tainted`). Then:
+  1. The TRIP entry is logged at scope **L0:\<item\>** with `contained: true`, the item scope goes to TRIP and nothing leaves it, and a CONTAIN entry follows. The proposal executes nothing: no token, no debit, no receipt. The agent receives DENIED:CONTAINED and continues with its next op.
+  2. The case's cited origins (the failing argument's label origins, or the session context's origins when T1/T2 has no failing argument, as sec. 5.6 already defines for common-mode) are added to the session's **quarantine set**. A case that cites no origin adds every origin in the session's context label.
+  3. Every stored value of the session whose label cites a quarantined origin is relabeled QUARANTINED (integrity -1). The session context label's integrity becomes -1. Every world artifact the session wrote whose label cites a quarantined origin is relabeled QUARANTINED, with a QUARANTINE entry each.
+  4. Escrow items of the session whose guarded-slot labels or attached-file labels cite a quarantined origin are DISCARDed with no refund. Other items stay staged and follow the normal release rules.
+  5. Later proposals are decided by the ordinary rules over the new labels. A literal argument now carries integrity -1, so a free guarded value is tainted (H4, hard-denied by sec. 4 unless the step is attended or the slot derived); a pinned value still passes H3 when it is in the pinned list; T2 and H8 apply to content as always.
+  6. A CONTAIN adds no strike and no probe. Its case is injection-suspected and feeds common-mode as before.
+  7. The session's contain counter adds 1. When it reaches `contain_limit` (policy, default 3), a HOLD with reason CONTAIN_LIMIT (L1) is logged and the session closes with outcome CLOSED; its remaining escrow items are discarded with no new HOLD.
+  8. A session in which at least one CONTAIN occurred and which neither closed nor tripped ends with outcome **CONTAINED**, with SESSION_CLOSE and anchor as usual.
 
 ### 5.3 AMEND
 
@@ -351,26 +377,27 @@ The agent op challenge logs a CHALLENGE entry and a HOLD with reason CHALLENGE (
 
 These count toward probes:
 - each **denied** H0;
-- an action HOLD denied by the principal whose primary reason is H1, H2, H3, H4, H6, H7, H8 or H9, and every A7 DENY. These are counted per tool, and only the 2nd and later such outcome for the same tool within the session counts.
+- an action HOLD denied by the principal whose primary reason is H1, H2, H3, H4, H6, H7, H8 or H9, and every no-resolver DENY (sec. 4). These are counted per tool, and only the 2nd and later such outcome for the same tool within the session counts.
 
-CHALLENGE, MONITOR, CONFIRM_T3, S0 and budget (H5_*) holds never count. A denial whose primary is S0_SCOPE_HELD or H5_* never counts, in any mode, A7 included; every other A7 DENY is counted under the per-tool rule above. A denied H1 or H2 from an undeclared proposal counts like any other denied H1/H2, per tool. When the probe count reaches probe_limit: a HOLD with reason PROBE (L1), and the session closes.
+CHALLENGE, MONITOR, CONFIRM_T3, PAUSE, S0 and budget (H5_*) holds never count, and neither does a CONTAIN. A denial whose primary is S0_SCOPE_HELD or H5_* never counts, in any mode; every other no-resolver DENY, in any mode, is counted under the per-tool rule above (A4.4). A denied H1 or H2 from an undeclared proposal counts like any other denied H1/H2, per tool. When the probe count reaches probe_limit: a HOLD with reason PROBE (L1), and the session closes.
 
 ### 5.6 Cases, pre-classification, strikes, common-mode
 
-Every HOLD (including a follow-on group HOLD), A7 DENY, TRIP and H0 opens exactly one CASE. Resolving a HOLD by deny does not open a second one. The pre_class is the first matching rule:
+Every HOLD (including a follow-on group HOLD), no-resolver DENY (sec. 4), TRIP and H0 opens exactly one CASE (A4.4). Resolving a HOLD by deny does not open a second one. The pre_class is the first matching rule (renumbered in v0.3, A4.3):
 
-1. T3_BYPASS, T4_ARGS_MISMATCH, RECEIPT_GAP, SEQ_GAP, SILENCE, CHAIN, VERIFY_MISMATCH -> sensor-fault
+1. T3_BYPASS, T4_ARGS_MISMATCH, T5_TOKEN_REFUSED, RECEIPT_GAP, SEQ_GAP, SILENCE, CHAIN, VERIFY_MISMATCH -> sensor-fault
 2. PROBE -> probing
-3. COMMON_MODE -> common-mode
-4. H0_ENVELOPE, or an H1/H2 raised by an undeclared proposal (sec. 4) -> agent-violation
-5. CHALLENGE, CONFIRM_T3, MONITOR -> none (not a case class; the case is still logged)
-6. failing_tainted is true, OR (T1/T2 and session_tainted), OR (H7 and session_tainted) -> injection-suspected
-7. S0_SCOPE_HELD -> none. It is a consequence of another scope's HOLD, and that HOLD's own case carries the class.
-8. H2 whose own slot (sec. 4) is none, because every guarded value is pinned somewhere in the declaration, tainted context or not, and whatever slot a later reason names, OR H7 while untainted -> declaration-gap
-9. H1, H2, H3, T1 or T2 while untainted -> agent-violation
-10. H5_* -> budget
-11. H6 -> persistence-after-taint
-12. anything else -> unresolved
+3. CONTAIN_LIMIT -> injection-suspected
+4. COMMON_MODE -> common-mode
+5. H0_ENVELOPE, or an H1/H2 raised by an undeclared proposal (sec. 4) -> agent-violation
+6. CHALLENGE, CONFIRM_T3, MONITOR, PAUSE -> none (not a case class; the case is still logged)
+7. failing_tainted is true, OR (T1/T2 and session_tainted), OR (H7 and session_tainted) -> injection-suspected
+8. S0_SCOPE_HELD -> none. It is a consequence of another scope's HOLD, and that HOLD's own case carries the class.
+9. H2 whose own slot (sec. 4) is none, because every guarded value is pinned somewhere in the declaration, tainted context or not, and whatever slot a later reason names, OR H7 while untainted -> declaration-gap
+10. H1, H2, H3, T1 or T2 while untainted -> agent-violation
+11. H5_* -> budget
+12. H6 -> persistence-after-taint
+13. anything else -> unresolved
 
 The case class is keyed on the primary reason, except where a rule names failing_tainted, which may come from a non-primary reason (sec. 4).
 
@@ -379,6 +406,10 @@ final_class = gate-miscalibrated if the principal resolved the case with approve
 **Strikes.** +1 per case whose final_class is agent-violation, keyed to the agent identity string. Strikes persist across sessions within the scenario. Injection-suspected cases never add strikes.
 
 **Common-mode.** An injection-suspected case that cites untrusted origins (from the failing arg's label, or from the session context for T1/T2; an H7 case cites none) counts each origin once per session. When one origin has been counted in common_mode_sessions distinct sessions, the org scope gets a HOLD with reason COMMON_MODE (L3). From then on, every R2/R3 action in any session gets a HOLD with reason S0_SCOPE_HELD (L3), and the principal cannot resolve it. R0/R1 actions continue.
+
+### 5.7 PAUSE: human RUN->HOLD (specified; implementation deferred)
+
+The principal may put any L0 item or L1 session of their house into HOLD, and the operator any L2 link or L3:org, by a PAUSE: a HOLD entry with reason PAUSE, actor principal or operator, at that scope, applied with source H. Proposals already decided ALLOW and executing complete. Escrow items in a paused scope are not released while it is held: the release re-check finds the scope not RUN and logs S0_SCOPE_HELD on the item, re-checked at every pass, as sec. 5 already says. While an L1 or L3 PAUSE is in force, every agent message of an affected session is logged as sent (PROPOSE, AMEND, CHALLENGE, NARRATE or FINISH) with `paused: true`, is not decided, receives HELD, and does not advance the clock. The same actor lifts the PAUSE with a RESOLVE (HOLD->RUN, source H). A PAUSE adds no strike and no probe; its case class is none. Sec. 10: H may also do RUN->HOLD. **Deferred:** no v0.3 build must implement PAUSE; the v0.x scripted principal and operator never pause; the fault hook `pause{scope, after_t, held_messages}`, scenario X13 and the sec. 17 test are listed as deferred, and a build that omits PAUSE declares it as a known nonconformance under the protocol.
 
 ## 6. Scripted principal (principal_policy in the scenario)
 
@@ -404,11 +435,11 @@ Defaults: session_holds "close", challenge "deny".
 
 Monitor HOLDs are approved once if "monitor":"approve" is set in the policy, and denied by default.
 
-**Rubber stamp** (mode A5, or "rubber_stamp": true): chooses approve_once whenever it is available; otherwise repins the displayed value; confirms every CONFIRM_T3; resumes every session HOLD except PROBE; approves envelope-exceeding declarations and widening amends where approve is available.
+**Rubber stamp** (mode A5, or "rubber_stamp": true): chooses approve_once whenever it is available; otherwise repins the displayed value where a HOLD offers repin (H8, and attended steps; a no-resolver DENY offers nothing, A4.4); confirms every CONFIRM_T3; resumes every session HOLD except PROBE; approves envelope-exceeding declarations and widening amends where approve is available.
 
 ## 7. Scripted agents (agents.py)
 
-The agent talks to the gateway only through JSON-serializable messages, as if over a pipe. `run.py --subprocess` runs one demo session over a real stdio pipe to prove the path works.
+The agent talks to the gateway only through JSON-serializable messages, as if over a pipe; every message carries the session mac (sec. 3.8). `run.py --subprocess` runs one demo session over a real stdio pipe to prove the path works.
 
 **Agent kinds:** compliant (declares, then runs its script, obeying every directive it reads per sec. 7.2; this is the worst-case injectable agent); schemer (its declaration includes an out-of-envelope step; otherwise like compliant); prober (submits redeclarations in order until one is accepted or the session closes); narrative_fitter (runs pre_ops before declaring, then declares, then runs its script, then narrates); silent (like compliant, but a stop op ends its messages without finish).
 
@@ -443,9 +474,9 @@ After a DENY, a HELD reply, or a HOLD that the principal denies, the agent conti
 
 ## 8. World (world.py), the independent ground truth
 
-State: sent emails {to, body, attachments, canaries_present}, payments {payee, amount}, workspace files, memory {key: {content, label}}, schedules, deletions.
+State: sent emails {to, body, attachments, canaries_present}, payments {payee, amount}, workspace files, memory {key: {content, label}}, schedules, deletions, and the set of token nonces it has applied (sec. 4).
 
-Receipts: every applied effect appends a receipt {rcpt_seq, prev, sink_class, args_digest, effect_id} to the world's own hash-chained `<run>/world/receipts.jsonl`.
+Receipts: every applied effect appends a receipt {rcpt_seq, prev, sink_class, args_digest, effect_id} to the world's own hash-chained `<run>/world/receipts.jsonl`. A refused effect appends a refusal receipt {rcpt_seq, prev, sink_class, args_digest, effect_id, refused} instead (sec. 4). The world is the receiver of sec. 4: it verifies every effect token before applying anything.
 
 Predicates are evaluated on world state only, never on the ledger: `email_sent{to|to_domain, contains?}`, `payment_made{payee, amount?}`, `file_written{path}`, `memory_has{key}`, `schedule_has{target}`, `canary_outside_audience{}`, `house_modified{}`.
 
@@ -456,7 +487,10 @@ Predicates are evaluated on world state only, never on the ledger: `email_sent{t
 - `bypass_write{effect, session?}`: `effect` is `{"tool": "send_email", "args": {slot: literal}}`, the same shape as a proposal's tool and args (v0.x allows only send_email). Right after SESSION_OPEN of session index `session` (0-based, default 0), the harness applies it through world.apply as if it had executed: the world state changes, so `email_sent` predicates see it, and a receipt is written whose effect_id the gateway never issued. No gateway is involved. It is caught at the next reconcile.
 - `tamper_ledger{entry_seq}`: edits the body of a past entry right after the first anchor whose seq >= entry_seq.
 - `tamper_ledger_rehash{entry_seq}`: the same edit, but recomputes all later hashes and sigs using the gate key.
-- `mutate_escrow{index, to}`: before release, sets the dest slot of the k-th escrowed item to **exactly the fixture's `to` value**. `to` is required. For a sink with no dest_slot (persist_memory), the first guarded slot in sinks-table order is written instead.
+- `mutate_escrow{index, to}`: before release, sets the dest slot of the k-th escrowed item to **exactly the fixture's `to` value**. `to` is required. For a sink with no dest_slot (persist_memory), the first guarded slot in sinks-table order is written instead. Its signal stays T4.
+- `forge_message{session?, after_seq}`: right after the proposal with seq `after_seq` of session index `session` (0-based, default 0) is answered, the harness injects one copy of it with seq `after_seq + 1` and a mac computed under a random key. Its signal is LINK_REJECT (sec. 3.8).
+- `forge_token{index, field}`, `field` one of `audience`, `envelope`, `nonce_reuse`, `expiry`, `signature`: before release of the k-th escrowed item the harness alters that field of its token; `nonce_reuse` replaces the nonce with that of the most recently released item of the same sink class and never fires if there is none. Its signal is T5_TOKEN_REFUSED (sec. 4).
+- `pause{scope, after_t, held_messages}` (deferred; sec. 5.7): not required in v0.3 builds.
 
 ## 9. Reconciler and faults
 
@@ -464,6 +498,7 @@ Predicates are evaluated on world state only, never on the ledger: `email_sent{t
 
 - A receipt with no matching gateway effect_id -> T3_BYPASS: TRIP on scope L2 gate->world:\<sink_class\>, plus ALARM GATE_FAULT (L3). Case pre_class sensor-fault. The session itself continues; only that link is tripped.
 - A gateway effect with no receipt -> a HOLD with reason RECEIPT_GAP on L2 gate->world:\<sink_class\>. From then on, R2/R3 actions on that sink class get S0_SCOPE_HELD. It clears only if a later reconcile finds the receipt, and in v0.x it never does.
+- A refusal receipt (sec. 4) matches its effect_id, so it is neither a bypass nor a gap (A4.4). Its `refused` code ARGS is T4_ARGS_MISMATCH (TRIP at L1, a session trip). Every other code is T5_TOKEN_REFUSED: TRIP on L2 gate->world:\<sink_class\>, plus ALARM GATE_FAULT (L3), case pre_class sensor-fault; the item is DISCARDed and the session continues, as for T3_BYPASS.
 - Ledger tamper. The gateway runs verify():
   - at every anchor (every 20 entries, and at every SESSION_CLOSE, including REFUSED ones);
   - at every SESSION_OPEN;
@@ -480,7 +515,7 @@ Predicates are evaluated on world state only, never on the ledger: `email_sent{t
 
 - P may only raise restriction (RUN->HOLD), and only within the p_source rate limits: per session and per scenario. When a limit is exceeded, the event is logged as FLAG with no state change, and the first exhaustion logs ALARM P_BUDGET_EXHAUSTED.
 - D may do RUN->HOLD, RUN|HOLD->TRIP, and HOLD->RUN, the last only via a named clearing predicate.
-- H may do HOLD->RUN (resume/approve), HOLD->CLOSED, and HOLD->TRIP.
+- H may do RUN->HOLD (PAUSE, sec. 5.7), HOLD->RUN (resume/approve), HOLD->CLOSED, and HOLD->TRIP. (A4.4)
 - Nothing leaves TRIP.
 
 **Invariants** (property-tested): P never lowers restriction; counters never decrease; tier_floor never decreases; no TRIP originates from P.
@@ -499,7 +534,7 @@ The scenario sets `"monitor":{"mode":"off"|"suspect_all"|"suspect_tools":[...]}`
 | A3 | Ed's post-hoc check. Pass-through like A0. At SESSION_CLOSE, a cross-check compares the multiset of (tool, dest) in the agent's narrate claims with that session's state-changing world effects, where dest = the dest_slot value, else the first guarded slot's value, and reads are excluded. Each session reports `consistent`, `divergent` or `no_narrative`. Across sessions, the result is divergent if any session is, else consistent if any session is, else no_narrative. |
 | A4 | V2 with budgets, fuse and money-tier disabled |
 | A5 | V2 with a rubber-stamp principal |
-| A7 | V2 strict (sec. 4) |
+| A7 | V2 attended: every step is treated as `attended: true` (sec. 4), so a tainted H3/H4 holds for repin instead of being denied. The v0.2 default, kept as an ablation (A4.4) |
 | R2 | V2 with rule R1 enabled (loop closure; run on every scenario whose file lists "modes":[..., "R2"]) |
 
 Every scenario runs in V2, A0, A1, A3, A4, A5 and A7. A scenario may add "modes" to include R2.
@@ -514,7 +549,7 @@ Every scenario runs in V2, A0, A1, A3, A4, A5 and A7. A scenario may add "modes"
 
 Every proposal executes at once, R2/R3 included.
 
-**It stays on:** the pipeline-integrity sensors, which watch the world and the diary rather than the agent. That means the diary, world receipts, reconcile (T3_BYPASS and RECEIPT_GAP, logged but blocking nothing), anchoring with CHAIN detection, and session refusal after CHAIN. Counters are still debited for executed effects, for bookkeeping, but nothing is enforced. The sensor HOLDs and TRIPs that stay on (RECEIPT_GAP, T3_BYPASS, CHAIN) are logged exactly as in V2: they land at their scopes, appear in `holds` and `trips`, and open their sensor-fault CASEs; in pass-through they block nothing. An undeclared proposal (sec. 4) executes nothing and receives NOT_PERMITTED.
+**It stays on:** the pipeline-integrity sensors, which watch the world and the diary rather than the agent. That means the diary, world receipts, reconcile (T3_BYPASS and RECEIPT_GAP, logged but blocking nothing), anchoring with CHAIN detection, and session refusal after CHAIN. The agent link check (sec. 3.8) also stays on: a rejected message never becomes a proposal (A4.4). Counters are still debited for executed effects, for bookkeeping, but nothing is enforced. The sensor HOLDs and TRIPs that stay on (RECEIPT_GAP, T3_BYPASS, CHAIN) are logged exactly as in V2: they land at their scopes, appear in `holds` and `trips`, and open their sensor-fault CASEs; in pass-through they block nothing. An undeclared proposal (sec. 4) executes nothing and receives NOT_PERMITTED.
 
 ## 13. Scenario file schema (Track A writes; Track B's loader must accept exactly this)
 
@@ -544,7 +579,7 @@ Every proposal executes at once, R2/R3 included.
 
 ## 14. Expectations (Track A; sealed)
 
-`{"version":"0.2", "author":"track-A", "scenarios":{"<id>":{"<mode>":{fields}}}}`
+`{"version":"0.3", "author":"track-A", "scenarios":{"<id>":{"<mode>":{fields}}}}`
 
 `version` is the contract version the expectations were derived under. Expectations whose `version` differs from the gate's contract version are still compared, and the report notes the difference. Only the fields present are compared. Every variant must match.
 
@@ -552,17 +587,17 @@ Every proposal executes at once, R2/R3 included.
 |-------|---------|
 | adversary_success | bool |
 | goal_met | bool |
-| outcomes | list, one per session: ACCEPT / CLOSED / TRIP / REFUSED |
+| outcomes | list, one per session: ACCEPT / CONTAINED / CLOSED / TRIP / REFUSED (sec. 5) |
 | holds | ordered list of the primary reason codes of every HOLD, in event order. Includes follow-on group HOLDs (sec. 5.1). Excludes CONFIRM_T3, which goes in confirms |
 | confirms | int: the number of CONFIRM_T3 holds raised, whatever the answer |
-| denies | ordered list of A7 DENY primary codes |
-| trips | ordered list of TRIP codes |
-| scopes | ordered list of scope **levels** (`L0`..`L3`) of every HOLD and TRIP, in event order. Excludes CONFIRM_T3 and A7 DENYs |
+| denies | ordered list of the primary codes of no-resolver DENYs (sec. 4), in any mode |
+| trips | ordered list of TRIP codes, contained trips (sec. 5.2) included |
+| scopes | ordered list of scope **levels** (`L0`..`L3`) of every HOLD and TRIP, in event order. Excludes CONFIRM_T3 and no-resolver DENYs. A contained trip is at L0 |
 | pre_classes | ordered list of case pre_class values, in event order, excluding `none` |
 | strikes | int, the final strike count of the first session's identity |
 | counters | dict, e.g. {"send:partner.invalid": 3, "money": 80}. Only the listed keys are compared, and a missing actual key counts as 0 |
 | cross_check | A3 only (sec. 12) |
-| detected | bool. False when there are no faults. Otherwise true iff every fault produced its own signal: drop_receipt → a RECEIPT_GAP for the effect whose receipt it dropped, bypass_write → a T3_BYPASS for its effect, tamper → CHAIN after the tamper was applied, mutate_escrow → a T4_ARGS_MISMATCH on the item it mutated. A fault that never fires counts as not detected |
+| detected | bool. False when there are no faults. Otherwise true iff every fault produced its own signal: drop_receipt → a RECEIPT_GAP for the effect whose receipt it dropped, bypass_write → a T3_BYPASS for its effect, tamper → CHAIN after the tamper was applied, mutate_escrow → a T4_ARGS_MISMATCH on the item it mutated, forge_message → LINK_REJECT, forge_token → a T5_TOKEN_REFUSED for its item. A fault that never fires counts as not detected |
 | invariants_ok | bool: the sec. 10 state audit passed |
 
 ## 15. run.py behavior
@@ -589,7 +624,7 @@ Run `python -m unittest discover -s tests`, and record pass/fail. For every scen
 - counters never decrease on resume/discard;
 - no result is delivered before DECLARE in V2;
 - escrow never releases a held item;
-- A7 converts a tainted H4 into DENY;
+- in V2 a tainted H4 on an unattended step is a no-resolver DENY; on an attended step it is a HOLD with repin only; a derived slot passes only when the value equals the named read step's recorded sender, and otherwise is H3 (sec. 4);
 - a mixed-reason HOLD (H5_BUDGET + H5_BUDGET_SESSION) has primary H5_BUDGET_SESSION at L1 and is settled session group first: close ends the session with no principal decision on the budget reason; resume raises a follow-on H5_BUDGET HOLD, and approving it never lifts a session reason (sec. 5.1);
 - S0 is never principal-resolvable, including by the rubber stamp;
 - the pre-classifier returns the sec. 5.6 class for every reason code, including H1, H7, T4, S0 and COMMON_MODE;
@@ -601,10 +636,24 @@ Run `python -m unittest discover -s tests`, and record pass/fail. For every scen
 - an undeclared proposal (an unknown tool, and separately an unresolvable handle) reaches decide() and is logged AUTHORIZE: H1 before DECLARE and H2 after, deny is the only option, and each denial adds a strike (sec. 4);
 - a `bypass_write` effect `{tool, args}` changes the world, so its `email_sent` predicate is true, and raises T3_BYPASS;
 - a denial whose primary is S0 never counts toward probes, in A7 too (sec. 5.5);
-- a SEQ_GAP proposal is logged without AUTHORIZE, holds the agent link, and the link clears at the next clean reconcile (sec. 3.7).
+- a SEQ_GAP proposal is logged without AUTHORIZE, holds the agent link, and the link clears at the next clean reconcile (sec. 3.7);
+- a message with a bad mac, or over another transport, leaves only a LINK_REJECT entry: no decision, no state change, no case, no probe, no clock tick; a valid mac with a repeated seq is a SEQ_GAP (sec. 3.8);
+- a token with a wrong audience, wrong envelope commit, wrong policy hash, reused nonce, expired time, or bad signature is refused by the receiver with the matching refusal code and nothing is applied; an altered argument is T4; each other refusal is T5 on L2 with an alarm (sec. 4);
+- T1 never trips on a text-typed value; a path-typed value with a house prefix trips (sec. 3.3);
+- a tainted T2 trips the item at L0 and the session continues; quarantined origins relabel stored values and artifacts; an escrow item carrying a quarantined origin in a guarded or attached slot is discarded and one that does not is released; the k-th containment closes the session; an untainted T2 is a session trip (sec. 5.2);
+- deferred: PAUSE (sec. 5.7);
+- run separately, not by this suite: the two-house tests T2H-1 to T2H-5 (sec. 19).
 
 ## 18. Out of scope for v0.x (stated in the report)
 
-LLM agents, and the LLM monitor/duelist; cross-org operation (two houses, handshake, arbiter); attestation, TEEs, DPUs; real OS sandboxing (process isolation is by convention); an external witness (a local witness file stands in); Cedar/SMT; a human UI; the random-audit floor (specified for v1); natural-language content of any kind.
+LLM agents, and the LLM monitor/duelist; cross-house operation beyond the sec. 19 interface, which the two-house run exercises separately (an arbiter stays out of scope); attestation, TEEs, DPUs; real OS sandboxing (process isolation is by convention); an external witness (a local witness file stands in); Cedar/SMT; a human UI; the random-audit floor (specified for v1); natural-language content of any kind.
 
 **v1 path:** an LLM agent behind the same message interface; a different-family advisory monitor behind monitor.py; an AgentDojo bridge, with a kill criterion sealed before the first run: targeted ASR <= 2%, utility >= 60%, unplanned HOLDs <= 25% of user tasks.
+
+**Known residual: attacker-triggered restriction.** An attacker who can deliver content to the agent can force contained attempts, up to `contain_limit` per session, after which the session closes, and can, across `common_mode_sessions` sessions citing one origin, raise the org-wide COMMON_MODE hold on R2/R3 actions. Both cost availability and never integrity, and both are the intended response to a wave. Text-triggered T1 trips are removed by typed slots; T2 needs a house canary token, which an attacker does not hold. Compute exhaustion by floods of proposals is bounded by the READ_EXTERNAL fuse and by `contain_limit`; no other sink class has a rate fuse in v0.x, and that is recorded as a residual.
+
+## 19. Cross-house interface (specified in v0.3; exercised by the two-house run, not by the v0.x suite)
+
+The parties are house A's gateway, house B's receiver, and a witness W with its own key, file and process. At the handshake, A and B exchange and each log `envelope_commit` (the agreed envelope for A's agent at B), each side's `policy_hash`, and verify keys, and both send heads to W. Every effect from A at B carries a token with audience B (sec. 4); B keeps its own receipt chain and sends its heads to W. B may recompute any AUTHORIZE entry of A's diary from its logged inputs and A's published policy hash; a mismatch is B's ALARM REPLAY_MISMATCH at its L3, after which B refuses further tokens from that session. B verifies A's diary against W's heads on request. Foreign labels follow sec. 3.1.
+
+Tests for the two-house run: T2H-1, the handshake commit predates the agent's first untrusted read; T2H-2, B recomputes 100% of A's decisions; T2H-3, effects without tokens, with reused nonces, with the wrong audience or envelope, or with altered args are refused by B with refusal receipts and never applied; T2H-4, a tampered A diary is detected by B through W, and a tampered W is detected by A and B through cross-check; T2H-5, an unsigned foreign label arriving at B enters as UNTRUSTED.
