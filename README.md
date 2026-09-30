@@ -19,8 +19,12 @@ Any success-rate number in `out/report.md` is measured against the project's own
 - **Run 2:** the same code against corrected expectations v2, with lineage. 10,185 / 10,335; the rest await contract v0.1.
 - **Contract v0.1** (amendment A2, post-reveal): resolves every v0 contradiction and latent divergence, and pins the clauses both tracks flagged. It adds model-family independence and the custody lessons to the protocol. Tag `contract-v0.1` (`aa4b65c`).
 - **Track A v0.1 sealed:** `b2547db`. 44 scenarios with hand-derived expectations, on Fable 5.1; seal `sha256:0275440e…882bec`.
-- **Track B v0.1 implementation:** this commit, delivered blind on Opus 5.5 and built from the contract at `contract-v0.1` alone. Committed before the reveal. Track B declared one known nonconformance before publication and it is published unfixed, so the reveal can test that prediction (see `docs/PROTOCOL_LOG.md`).
-- **Reveal v0.1:** pending.
+- **Track B v0.1 implementation:** `64e33e5`, delivered blind on Opus 5.5 and built from the contract at `contract-v0.1` alone. Committed before the reveal. Track B declared one known nonconformance before publication and it is published unfixed, so the reveal can test that prediction (see `docs/PROTOCOL_LOG.md`).
+- **Reveal v0.1 (run 1, blind):** published unedited in `results/v0.1/run1/`.
+  - Seal verified.
+  - 1,550 runs, 3,445/3,445 decisions replayed, 0 invariant violations.
+  - **10,920 / 10,955 expected fields matched (99.7%).** All 35 mismatches are one field of one scenario (X2 `adversary_success`, every mode and variant).
+- **Classification v0.1:** pending, in `docs/CONTRADICTIONS.md`.
 
 ## Quickstart
 
