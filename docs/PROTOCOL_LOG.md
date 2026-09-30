@@ -1,4 +1,15 @@
-# Protocol Log: v0 run
+# Protocol Log
+
+## v0.1 run
+
+| When (2026-09-29) | Event | Material exposed | Verdict |
+|---|---|---|---|
+| after classification | **Contract v0.1 published.** Amendment A2 is at commit `aa4b65c`, tagged `contract-v0.1`. | — | Pins the contract for the v0.1 run. |
+| after tag | **Track folders prepared by the bridge.** `duelist-ledger-v0.1-track-a` holds the spec, plan and protocol at the tag, plus an empty `private/`. `duelist-ledger-v0.1-track-b` holds the spec and protocol at the tag plus Track B's unmodified v0 build from `b2e592a`, and deliberately no scenarios, results, plan, contradictions record or amendment log. A leak scan of the Track B folder found only the spec's own `CANARY-01` example and Track B's own v0 fixtures. Both folders carry the web-deny, ask-mode settings. | — | Ready. Planned models: Track A on Fable 5.1; Track B on a different family if available, otherwise a different Claude model (to be recorded). |
+| 20:20 EDT (00:20 UTC, Sept 30) | **Track A v0.1 sealed.** A fresh session on `duelist-ledger-v0.1-track-a`, running Fable 5.1 (`claude-fable-5-1`). It passed the folder guard and all three contract checksums, and read only the three contract files and its prompt. 44 scenarios, 310 scenario × mode entries, derived by hand. Python was used only for arithmetic, structural checks and the seal. Track A recorded assumptions and reported remaining spec and plan gaps. **Their contents are withheld until the reveal.** Track A followed its prompt over the plan (a noted plan-vs-prompt mismatch): outputs in `./private`, and the bridge carries the seal. | None to Track B (not started). | Seal `sha256:0275440e1bf70e786bcca62113059fecc7a6a0be49961e73f542a25502882bec`. |
+| after seal | **Bridge verification.** The contract checksums were unchanged, and the file inventory matched the plan (44). The bridge recomputed the seal independently from `expectations.json` + `salt.txt` without displaying either, and it matched. Following the author's standing policy from v0, the seal goes up as-is: the gaps become contradiction-record entries at the reveal. Only the seal file enters the repo, at `sealed/v0.1/`. | None. | Seal committed before Track B starts. |
+
+## v0 run
 
 This log records every custody event in the two-track run. It is committed alongside the protocol artifacts so the method can be audited. Times are EDT (UTC−4); exact times also appear in UTC.
 
