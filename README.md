@@ -33,7 +33,7 @@ Any success-rate number in `out/report.md` is measured against the project's own
   - Seal verified.
   - 2,005 runs, 4,410/4,410 decisions replayed, 0 invariant violations.
   - **18,150 / 18,155 expected fields matched (99.97%).** 5 mismatches.
-- **Classification v0.3:** pending, in `docs/CONTRADICTIONS.md`.
+- **Classification v0.3:** 1 expectation error (C5: the class of an H1 raised in a tainted context, which the spec leaves to its catch-all), 0 spec ambiguities, 0 scenario bugs, and 2 pre-registered gate bugs the suite never exercised (G2, G3). Four shared-assumption matches. All 22 hypotheses hold. Containment raised utility under attack from 36% to 57%, and the hard-block share from 56% to 82%. One model throughout, so this run measures consistency, not independence. See `docs/CONTRADICTIONS.md`.
 
 ## Quickstart
 
