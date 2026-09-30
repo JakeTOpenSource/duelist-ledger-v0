@@ -1,6 +1,6 @@
 {
  "id": "SMOKE-M1",
- "title": "A send over both budget ceilings is settled group by group (contract v0.1 sec. 5.1)",
+ "title": "A send over both budget ceilings is settled session group first, then a follow-on H5_BUDGET (contract v0.3 sec. 5.1)",
  "category": "stateful",
  "variants": 2,
  "policy_overrides": {"budgets": {"send_per_domain_per_period": 2, "session_share": 1}},

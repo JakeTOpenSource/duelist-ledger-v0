@@ -1,20 +1,23 @@
-"""The simulated world: the independent ground truth.
+"""The simulated world: the independent ground truth, and the receiver of effect tokens.
 
 In plain words: a pretend mailbox, web, file workspace, memory, payment rail and calendar.
-When the gate executes an action, the world applies it and writes a receipt in its OWN
-hash-chained receipt book. Scenario goals ("was this email sent?") are judged on the world's
-state only, never on the gate's diary. Fault hooks let the harness make the world misbehave
-(drop a receipt, apply an effect behind the gate's back).
+When the gate executes an action it hands the world a signed effect token; the world verifies
+it (signature, audience, envelope, policy, nonce, expiry, arguments) before applying anything,
+writes a receipt in its OWN hash-chained receipt book, and on any failure applies nothing and
+writes a refusal receipt instead (spec sec. 4, 8). Scenario goals ("was this email sent?") are
+judged on the world's state only, never on the gate's diary. Fault hooks let the harness make
+the world misbehave (drop a receipt, apply an effect behind the gate's back).
 """
 
 import os
 
 from . import labels as L
-from .canon import H, dumps_line
+from .canon import H, dumps_line, effect_args_hash, verify_signature
 from .decide import canary_hits, normalize_path
 from .policy import domain_of
 
 GENESIS = "sha256:" + "0" * 64
+REFUSALS = ("ARGS", "SIGNATURE", "AUDIENCE", "ENVELOPE", "POLICY", "NONCE", "EXPIRED")
 
 
 def _as_text(value):
@@ -31,7 +34,7 @@ def _file_label(spec, origin, default):
 
 
 class World:
-    def __init__(self, spec, run_dir, policy, faults=()):
+    def __init__(self, spec, run_dir, policy, faults=(), house_id="A"):
         spec = spec or {}
         regs = spec.get("registries") or {}
         self.registries = {k: list(v) for k, v in regs.items()}
@@ -71,11 +74,74 @@ class World:
                 self.drops.append((f.get("sink_class"), int(k) if not isinstance(k, bool) else k, n))
         self.dropped = {}  # fault number -> effect id whose receipt was dropped
         self.listeners = []
+        # the receiver's side of sec. 4
+        self.house_id = house_id
+        self.audience = "world:%s" % house_id
+        self.verify_tokens = True
+        self.material = None
+        self.policy_hash = None
+        self.sinks = {}
+        self.envelope_commit = None
+        self.nonces = set()
+        self.refusals = []
+
+    # ---- receiver binding (sec. 4): what the world holds to verify tokens ----
+    def bind_receiver(self, material, policy_hash, sinks, verify_tokens=True):
+        """The gateway's verify-key material (from the run manifest), the policy hash it holds,
+        and the sink table (to shape args_hash). verify_tokens=False only in pass-through, where
+        the spec switches action tokens off."""
+        self.material, self.policy_hash, self.sinks = material, policy_hash, dict(sinks or {})
+        self.verify_tokens = verify_tokens
+
+    def open_session(self, envelope_commit):
+        """The agreement the receiver holds for the current agent and session (sec. 4)."""
+        self.envelope_commit = envelope_commit
+
+    def revoke(self, nonces):
+        """Tokens of a tripped session (sec. 5.2): their nonces count as used, so any later
+        presentation is refused NONCE."""
+        self.nonces.update(n for n in nonces if n is not None)
+
+    def token_refusal(self, token, sink_class, args, t):
+        """The first failing check, in the order of sec. 4, or None when the token verifies."""
+        if not isinstance(token, dict):
+            return "SIGNATURE"
+        core = {k: v for k, v in token.items() if k != "sig"}
+        if not verify_signature(self.material, core, token.get("sig")):
+            return "SIGNATURE"
+        if token.get("audience") != self.audience:
+            return "AUDIENCE"
+        if token.get("envelope_commit") != self.envelope_commit:
+            return "ENVELOPE"
+        if token.get("policy_hash") != self.policy_hash:
+            return "POLICY"
+        if token.get("nonce") in self.nonces:
+            return "NONCE"
+        exp = token.get("expires_t")
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)) or not exp > t:
+            return "EXPIRED"
+        content = set((self.sinks.get(token.get("tool")) or {}).get("content") or [])
+        if token.get("args_hash") != effect_args_hash(args, content):
+            return "ARGS"
+        return None
+
+    def verify_token(self, token, sink_class, args, effect_id, t):
+        """Verify before applying anything. On failure writes a refusal receipt and returns the
+        refusal code; on success returns None (the nonce is kept only once the effect applies)."""
+        if not self.verify_tokens:
+            return None
+        code = self.token_refusal(token, sink_class, args, t)
+        if code is not None:
+            self._receipt(sink_class, args, effect_id, refused=code)
+            self.refusals.append({"effect_id": effect_id, "refused": code})
+        return code
 
     # ---- receipts ----
-    def _receipt(self, sink_class, args, effect_id):
+    def _receipt(self, sink_class, args, effect_id, refused=None):
         row = {"rcpt_seq": len(self.receipts) + 1, "prev": self._prev, "sink_class": sink_class,
                "args_digest": H(args), "effect_id": effect_id}
+        if refused is not None:
+            row["refused"] = refused
         row["hash"] = H(row)
         self._prev = row["hash"]
         self.receipts.append(row)
@@ -97,9 +163,25 @@ class World:
         f = self.files.get(path) if isinstance(path, str) else None
         return (f["content"], L.copy(f["label"])) if f else None
 
+    def artifact_label(self, kind, key):
+        """The label of a workspace file, memory entry or schedule entry (None if absent)."""
+        if kind == "file" and key in self.files:
+            return self.files[key]["label"]
+        if kind == "memory" and key in self.memory:
+            return self.memory[key]["label"]
+        if kind == "schedule" and isinstance(key, int) and 0 <= key < len(self.schedules):
+            return self.schedules[key]["label"]
+        return None
+
     # ---- effects ----
-    def apply(self, tool, sink_class, args, effect_id, payload_label=None):
-        """Apply one effect, write its receipt (unless a drop fault hits), return read results."""
+    def apply(self, tool, sink_class, args, effect_id, payload_label=None, token=None, t=0):
+        """Verify the token, apply one effect, write its receipt (unless a drop fault hits), and
+        return the read results. A refused token applies nothing: a refusal receipt is written
+        and None is returned."""
+        if self.verify_token(token, sink_class, args, effect_id, t) is not None:
+            return None
+        if self.verify_tokens:
+            self.nonces.add(token.get("nonce"))
         n = self.effect_counts[sink_class] = self.effect_counts.get(sink_class, 0) + 1
         label = L.copy(payload_label) if payload_label else L.top()
         results = []
@@ -163,32 +245,39 @@ class World:
             fn()
         return results
 
-    def bypass_email(self, effect, effect_id):
-        """Fault hook: an email effect applied directly, with a receipt, no gateway involved."""
-        args = {"to": effect.get("to"), "body": effect.get("body", "")}
-        if effect.get("attach"):
-            args["attach"] = effect.get("attach")
+    def bypass(self, effect, effect_id):
+        """Fault hook bypass_write (sec. 8): `effect` is {"tool", "args"}, the same shape as a
+        proposal's tool and args (v0.x allows only send_email). Applied as if it had executed,
+        with a receipt the gateway never issued and no token."""
+        effect = effect if isinstance(effect, dict) else {}
+        if "args" in effect or "tool" in effect:
+            args = dict(effect.get("args") or {})
+        else:  # the v0.1 shape ({to, body}) is still understood
+            args = dict(effect)
+        args.setdefault("body", "")
         self.effect_counts["EXTERNAL_SEND"] = self.effect_counts.get("EXTERNAL_SEND", 0)
         text = _as_text(args.get("body"))
-        self.sent.append({"to": args["to"], "body": args["body"], "attachments": [],
+        self.sent.append({"to": args.get("to"), "body": args["body"], "attachments": [],
                           "canaries_present": [c["token"] for c in canary_hits(text, self.canaries)],
                           "bypass": True})
         self._receipt("EXTERNAL_SEND", args, effect_id)
         for fn in self.listeners:
             fn()
 
+    bypass_email = bypass  # v0.1 name
+
     def quarantine(self, kind, key):
         """Mark an artifact QUARANTINED. Returns True if it existed."""
-        if kind == "file" and key in self.files:
-            self.files[key]["label"] = dict(self.files[key]["label"], integrity=L.QUARANTINED)
-            return True
-        if kind == "memory" and key in self.memory:
-            self.memory[key]["label"] = dict(self.memory[key]["label"], integrity=L.QUARANTINED)
-            return True
-        if kind == "schedule" and isinstance(key, int) and 0 <= key < len(self.schedules):
-            self.schedules[key]["label"] = dict(self.schedules[key]["label"], integrity=L.QUARANTINED)
-            return True
-        return False
+        label = self.artifact_label(kind, key)
+        if label is None:
+            return False
+        if kind == "file":
+            self.files[key]["label"] = L.quarantine(label)
+        elif kind == "memory":
+            self.memory[key]["label"] = L.quarantine(label)
+        else:
+            self.schedules[key]["label"] = L.quarantine(label)
+        return True
 
     # ---- predicates (world state only) ----
     def _audience(self, token):

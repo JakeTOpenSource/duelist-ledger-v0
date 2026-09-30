@@ -10,10 +10,14 @@ import os
 
 from . import CAVEAT, CONTRACT
 
-OUT_OF_SCOPE = ("LLM agents, and the LLM monitor/duelist; cross-org operation (two houses, handshake, "
-                "arbiter); attestation, TEEs, DPUs; real OS sandboxing (process isolation is by "
-                "convention); an external witness (a local witness file stands in); Cedar/SMT; a human "
-                "UI; the random-audit floor (specified for v1); natural-language content of any kind.")
+OUT_OF_SCOPE = ("LLM agents, and the LLM monitor/duelist; cross-house operation beyond the sec. 19 "
+                "interface, which the two-house run exercises separately (an arbiter stays out of scope); "
+                "attestation, TEEs, DPUs; real OS sandboxing (process isolation is by convention); an "
+                "external witness (a local witness file stands in); Cedar/SMT; a human UI; the "
+                "random-audit floor (specified for v1); natural-language content of any kind. "
+                "Known residual (sec. 18): attacker-triggered restriction, up to contain_limit contained "
+                "attempts per session and, across common_mode_sessions sessions citing one origin, the "
+                "org-wide COMMON_MODE hold; both cost availability, never integrity.")
 
 
 def _pct(r):
@@ -46,8 +50,9 @@ def render(p):
     lines = [CAVEAT, "", "# Duelist Ledger v0: run report (contract v%s)" % CONTRACT, ""]
     ut = p.get("unit_tests") or {}
     seal = p.get("seal") or {}
-    lines += ["- Unit tests: %s (%s run, %s failures, %s errors)" % (
-        "PASS" if ut.get("ok") else ("SKIPPED" if ut.get("skipped") else "FAIL"),
+    lines += ["- Signatures: %s" % p.get("signatures", "unknown"),
+              "- Unit tests: %s (%s run, %s failures, %s errors)" % (
+        "SKIPPED" if ut.get("skipped") else ("PASS" if ut.get("ok") else "FAIL"),
         ut.get("run", 0), ut.get("failures", 0), ut.get("errors", 0)),
         "- Scenarios folder: `%s` (%d scenarios, %d runs)" % (p.get("scenario_dir"), p.get("scenario_count", 0),
                                                               len(p.get("runs", []))),
@@ -110,5 +115,5 @@ def render(p):
         else:
             lines.append("No mismatches.")
         lines.append("")
-    lines += ["## Out of scope for v0", "", OUT_OF_SCOPE, ""]
+    lines += ["## Out of scope for v0.x", "", OUT_OF_SCOPE, ""]
     return "\n".join(lines)

@@ -2,8 +2,9 @@
 
 In plain words: when the gate holds something, this stand-in human decides, following the
 scenario's principal_policy exactly: approve once if a matching rule exists and approval is
-allowed, otherwise re-pin a value it recognises, otherwise deny. The rubber stamp approves
-whatever it is allowed to approve.
+allowed, otherwise re-pin a value it recognises where repin is offered, otherwise deny. The
+rubber stamp approves whatever it is allowed to approve and repins the displayed value where a
+HOLD offers repin (H8, attended steps); a no-resolver DENY offers nothing (sec. 6, A4.4).
 """
 
 from .decide import member
@@ -44,8 +45,8 @@ class Principal:
         return "deny", None
 
     def session_hold(self, code):
-        """'resume' or 'close'. PROBE always closes."""
-        if code == "PROBE":
+        """'resume' or 'close'. PROBE and CONTAIN_LIMIT always close (sec. 5.1)."""
+        if code in ("PROBE", "CONTAIN_LIMIT"):
             return "close"
         if self.rubber_stamp:
             return "resume"

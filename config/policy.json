@@ -10,5 +10,6 @@
  "probe_limit": 3,
  "strike_hold": 3,
  "p_source": {"per_session": 2, "per_scenario": 5},
- "common_mode_sessions": 3
+ "common_mode_sessions": 3,
+ "contain_limit": 3
 }

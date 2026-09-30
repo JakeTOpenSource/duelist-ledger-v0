@@ -69,6 +69,36 @@ def copy(label):
     return make(label["integrity"], label.get("assets", []), label.get("origins", []))
 
 
+def cites(label, origins):
+    """True when the label names any of the given origins."""
+    return any(o in origins for o in (label or {}).get("origins", []))
+
+
+def quarantine(label):
+    """The same label at integrity QUARANTINED (-1); assets and origins are kept."""
+    return make(QUARANTINED, label.get("assets", []), label.get("origins", []))
+
+
+# ---- foreign labels (sec. 3.1, 19): house-local labels crossing a house boundary ----
+
+def signed_pair(value_digest, label):
+    """The canonical pair a house's gateway signs when a value leaves it."""
+    return {"label": copy(label), "value_digest": value_digest}
+
+
+def enter_foreign(value_digest, label, sig, sender_id, verify):
+    """A value arriving from house `sender_id`. `verify(pair, sig)` is the receiving house's
+    check with the sending gateway's verify key from the handshake (None when it holds none).
+
+    A label that verifies carries weight and is kept. Otherwise the label is dropped and the
+    value enters UNTRUSTED (integrity 0) with origin `house:<sender id>`.
+    Returns (label, sender).
+    """
+    if isinstance(label, dict) and verify is not None and verify(signed_pair(value_digest, label), sig):
+        return copy(label), sender_id
+    return make(UNTRUSTED, [], ["house:%s" % sender_id]), sender_id
+
+
 class ValueStore:
     """Session-local store of delivered values, addressed by handles h1, h2, ..."""
 
@@ -85,3 +115,13 @@ class ValueStore:
 
     def get(self, handle):
         return self._values.get(handle) if isinstance(handle, str) else None
+
+    def quarantine(self, origins):
+        """Relabel QUARANTINED every stored value whose label cites one of the origins (sec. 5.2).
+        Returns the handles relabeled."""
+        done = []
+        for handle, rec in self._values.items():
+            if cites(rec["label"], origins) and rec["label"]["integrity"] > QUARANTINED:
+                rec["label"] = quarantine(rec["label"])
+                done.append(handle)
+        return done

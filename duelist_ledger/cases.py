@@ -1,49 +1,52 @@
 """Case records, the deterministic pre-classifier, strikes and common-mode detection.
 
-In plain words: every hold, denial, trip or rejected plan becomes a case with a first-guess
-class (sensor fault, probing, agent violation, suspected injection, ...). If the human approved
-the held thing anyway, the case is re-labelled "gate-miscalibrated". Agent violations add
-strikes to the agent's identity. If the same untrusted source shows up in suspected injections
-across several sessions, the whole organisation is held (common-mode).
+In plain words: every hold, no-resolver denial, trip or rejected plan becomes a case with a
+first-guess class (sensor fault, probing, agent violation, suspected injection, ...). If the
+human approved the held thing anyway, the case is re-labelled "gate-miscalibrated". Agent
+violations add strikes to the agent's identity. If the same untrusted source shows up in
+suspected injections across several sessions, the whole organisation is held (common-mode).
 """
 
-SENSOR = ("T3_BYPASS", "T4_ARGS_MISMATCH", "RECEIPT_GAP", "SEQ_GAP", "SILENCE", "CHAIN",
-          "VERIFY_MISMATCH")
-NOT_A_CLASS = ("CHALLENGE", "CONFIRM_T3", "MONITOR")
+SENSOR = ("T3_BYPASS", "T4_ARGS_MISMATCH", "T5_TOKEN_REFUSED", "RECEIPT_GAP", "SEQ_GAP", "SILENCE",
+          "CHAIN", "VERIFY_MISMATCH")
+NOT_A_CLASS = ("CHALLENGE", "CONFIRM_T3", "MONITOR", "PAUSE")
 T_RULES = ("T1_HOUSE", "T2_CANARY")
 UNTAINTED_VIOLATIONS = ("H1_NO_DECLARATION", "H2_NOT_DECLARED", "H3_PINNED_MISMATCH", "T1_HOUSE", "T2_CANARY")
 
 
-def pre_classify(primary, failing_tainted=False, session_tainted=False, h2_no_slot=False):
-    """First matching rule of spec sec. 5.6.
+def pre_classify(primary, failing_tainted=False, session_tainted=False, h2_no_slot=False, undeclared=False):
+    """First matching rule of spec sec. 5.6 (the v0.3 numbering, A4.3).
 
     failing_tainted is the decision's (sec. 4), so it may come from a non-primary reason.
     h2_no_slot: the H2 reason named no slot (every guarded value is pinned somewhere).
+    undeclared: the H1/H2 was raised by an undeclared proposal (rule 5).
     """
     code = primary or ""
     if code in SENSOR:
-        return "sensor-fault"
+        return "sensor-fault"                                                   # 1
     if code == "PROBE":
-        return "probing"
+        return "probing"                                                        # 2
+    if code == "CONTAIN_LIMIT":
+        return "injection-suspected"                                            # 3
     if code == "COMMON_MODE":
-        return "common-mode"
-    if code == "H0_ENVELOPE":
-        return "agent-violation"
+        return "common-mode"                                                    # 4
+    if code == "H0_ENVELOPE" or (undeclared and code in ("H1_NO_DECLARATION", "H2_NOT_DECLARED")):
+        return "agent-violation"                                                # 5
     if code in NOT_A_CLASS:
-        return "none"
+        return "none"                                                           # 6
     if failing_tainted or (code in T_RULES and session_tainted) or (code == "H7_AMEND_WIDEN" and session_tainted):
-        return "injection-suspected"
+        return "injection-suspected"                                            # 7
     if code == "S0_SCOPE_HELD":
-        return "none"
+        return "none"                                                           # 8
     if (code == "H2_NOT_DECLARED" and h2_no_slot) or (code == "H7_AMEND_WIDEN" and not session_tainted):
-        return "declaration-gap"
+        return "declaration-gap"                                                # 9
     if code in UNTAINTED_VIOLATIONS and not session_tainted:
-        return "agent-violation"
+        return "agent-violation"                                                # 10
     if code.startswith("H5_"):
-        return "budget"
+        return "budget"                                                         # 11
     if code == "H6_PERSIST_AFTER_TAINT":
-        return "persistence-after-taint"
-    return "unresolved"
+        return "persistence-after-taint"                                        # 12
+    return "unresolved"                                                         # 13
 
 
 class Cases:

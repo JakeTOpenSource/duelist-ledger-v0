@@ -53,16 +53,18 @@ class MixedReasonHoldTest(unittest.TestCase):
         policy = copy.deepcopy(POLICY)
         policy["budgets"].update(self.BUDGETS)
         d = decide(inputs(policy=policy, counters={"send:home.invalid": 2}, session_counters={"send:home.invalid": 2}))
-        self.assertEqual(d["reasons"], ["H5_BUDGET", "H5_BUDGET_SESSION"])
-        self.assertEqual((d["outcome"], d["primary"], d["scope"], d["failing_slot"]), ("HOLD", "H5_BUDGET", "L3", None))
+        self.assertEqual(d["reasons"], ["H5_BUDGET", "H5_BUDGET_SESSION"], "reasons stay in rule-table order")
+        self.assertEqual((d["outcome"], d["primary"], d["scope"], d["failing_slot"]),
+                         ("HOLD", "H5_BUDGET_SESSION", "L1", None),
+                         "v0.3 (sec. 5.1, 17): the primary is the first reason of the first group settled: session")
 
-    def test_approving_the_budget_key_reason_never_lifts_the_session_reason(self):
+    def test_close_ends_the_session_with_no_decision_on_the_budget_reason(self):
         seen = {}
         s = run(self.budget_scenario(approve_once=[{"reason": "H5_BUDGET"}]), inspect=watch(seen))["summary"]
-        self.assertEqual(s["holds"], ["H5_BUDGET", "H5_BUDGET_SESSION"], "a follow-on HOLD for the session group")
-        self.assertEqual(s["scopes"], ["L3", "L1"])
-        self.assertEqual(s["pre_classes"], ["budget", "budget"], "the follow-on HOLD opens its own case")
-        self.assertEqual(resolutions(seen), ["approve_once", "close"],
+        self.assertEqual((s["holds"], s["scopes"]), (["H5_BUDGET_SESSION"], ["L1"]),
+                         "the session group is settled first; close asks nothing else")
+        self.assertEqual(s["pre_classes"], ["budget"])
+        self.assertEqual(resolutions(seen), ["close"],
                          "the H5_BUDGET rule prefix-matches H5_BUDGET_SESSION, but approve rules never settle "
                          "the session group; session_holds (default close) does")
         self.assertEqual(s["outcomes"], ["CLOSED"])
@@ -70,26 +72,38 @@ class MixedReasonHoldTest(unittest.TestCase):
         self.assertEqual([i["status"] for i in seen["items"]], ["released", "discarded"])
         self.assertEqual(s["counters"], {"send:home.invalid": 2}, "the held send never proceeded, so no debit")
 
-    def test_resumed_session_group_lets_the_action_proceed_over_its_ceiling(self):
+    def test_resume_raises_a_follow_on_budget_hold_whose_approval_never_lifts_the_session_reason(self):
         seen = {}
         policy = {"approve_once": [{"reason": "H5_BUDGET"}], "session_holds": "resume"}
         s = run(self.budget_scenario(**policy), inspect=watch(seen))["summary"]
-        self.assertEqual((s["holds"], s["outcomes"]), (["H5_BUDGET", "H5_BUDGET_SESSION"], ["ACCEPT"]))
+        self.assertEqual((s["holds"], s["scopes"], s["outcomes"]),
+                         (["H5_BUDGET_SESSION", "H5_BUDGET"], ["L1", "L3"], ["ACCEPT"]),
+                         "resume, then a follow-on H5_BUDGET HOLD at L3 with its own case")
+        self.assertEqual(s["pre_classes"], ["budget", "budget"])
+        self.assertEqual(resolutions(seen), ["resume", "approve_once"])
         self.assertEqual(seen["sent"], ["one", "two", "three"])
         self.assertEqual(s["counters"], {"send:home.invalid": 3}, "an approved H5_BUDGET still debits past the ceiling")
         self.assertFalse(any(k.startswith("L3:budget:") for k in seen["scopes"]), "H5_BUDGET sets no scope state")
-        a5 = run(self.budget_scenario())["summary"]
-        self.assertEqual((a5["holds"], a5["outcomes"]), (["H5_BUDGET"], ["ACCEPT"]),
-                         "default deny of the action group: nothing else is asked, no probe")
+        # the approval settled the action group only: a fourth send would meet the session reason again
+        wider = self.budget_scenario(**policy)
+        wider["sessions"][0]["agent"]["declaration"]["steps"][0]["max_calls"] = 4
+        wider["envelope"]["max_calls"]["send_email"] = 4
+        wider["sessions"][0]["agent"]["script"].insert(3, call("s2", "send_email", to=PRINCIPAL, body="four"))
+        again = run(wider)["summary"]
+        self.assertEqual(again["holds"], ["H5_BUDGET_SESSION", "H5_BUDGET", "H5_BUDGET_SESSION", "H5_BUDGET"],
+                         "a per-action approval never lifts a session-scope restriction")
+        deny = run(self.budget_scenario(session_holds="resume"))["summary"]
+        self.assertEqual((deny["holds"], deny["outcomes"]), (["H5_BUDGET_SESSION", "H5_BUDGET"], ["ACCEPT"]),
+                         "default deny of the follow-on action group: no probe, session stays ACCEPT")
         stamp = run(self.budget_scenario(), "A5")["summary"]
-        self.assertEqual((stamp["holds"], stamp["outcomes"]), (["H5_BUDGET", "H5_BUDGET_SESSION"], ["ACCEPT"]))
+        self.assertEqual((stamp["holds"], stamp["outcomes"]), (["H5_BUDGET_SESSION", "H5_BUDGET"], ["ACCEPT"]))
 
-    def test_groups_are_ordered_by_each_groups_first_reason(self):
+    def test_groups_are_settled_in_the_fixed_order_s0_session_action(self):
         def order(*codes):
             return [kind for kind, _ in Gateway._groups([{"code": c} for c in codes])]
-        self.assertEqual(order("H1_NO_DECLARATION", "S0_SCOPE_HELD"), ["action", "S0"])
-        self.assertEqual(order("S0_SCOPE_HELD", "H3_PINNED_MISMATCH", "H5_FUSE"), ["S0", "action", "session"])
-        self.assertEqual(order("H3_PINNED_MISMATCH", "H5_BUDGET_SESSION"), ["action", "session"])
+        self.assertEqual(order("H1_NO_DECLARATION", "S0_SCOPE_HELD"), ["S0", "action"])
+        self.assertEqual(order("S0_SCOPE_HELD", "H3_PINNED_MISMATCH", "H5_FUSE"), ["S0", "session", "action"])
+        self.assertEqual(order("H3_PINNED_MISMATCH", "H5_BUDGET_SESSION"), ["session", "action"])
         self.assertEqual(order("H5_BUDGET_SESSION", "H5_FUSE", "H6_PERSIST_AFTER_TAINT", "H8_FLOW"), ["session", "action"])
 
 
@@ -128,13 +142,16 @@ class PreClassifierTest(unittest.TestCase):
         F, T = False, True
         table = [  # primary, failing_tainted, session_tainted, h2_no_slot -> class
             ("T3_BYPASS", F, F, F, "sensor-fault"), ("T4_ARGS_MISMATCH", F, T, F, "sensor-fault"),
+            ("T5_TOKEN_REFUSED", F, T, F, "sensor-fault"),
             ("RECEIPT_GAP", F, F, F, "sensor-fault"), ("SEQ_GAP", F, T, F, "sensor-fault"),
             ("SILENCE", F, F, F, "sensor-fault"), ("CHAIN", F, F, F, "sensor-fault"),
             ("VERIFY_MISMATCH", F, T, F, "sensor-fault"),
             ("PROBE", F, T, F, "probing"),
+            ("CONTAIN_LIMIT", F, T, F, "injection-suspected"), ("CONTAIN_LIMIT", F, F, F, "injection-suspected"),
             ("COMMON_MODE", F, T, F, "common-mode"),
             ("H0_ENVELOPE", F, F, F, "agent-violation"), ("H0_ENVELOPE", F, T, F, "agent-violation"),
             ("CHALLENGE", F, T, F, "none"), ("CONFIRM_T3", T, T, F, "none"), ("MONITOR", F, T, F, "none"),
+            ("PAUSE", F, T, F, "none"),
             ("H3_PINNED_MISMATCH", T, T, F, "injection-suspected"), ("H4_TAINTED_GUARDED", T, T, F, "injection-suspected"),
             ("H2_NOT_DECLARED", T, T, F, "injection-suspected"), ("H8_FLOW", T, T, F, "injection-suspected"),
             ("T1_HOUSE", F, T, F, "injection-suspected"), ("T2_CANARY", F, T, F, "injection-suspected"),
@@ -154,6 +171,10 @@ class PreClassifierTest(unittest.TestCase):
         ]
         for primary, ft, st, h2, expected in table:
             self.assertEqual(pre_classify(primary, ft, st, h2), expected, (primary, ft, st, h2))
+        # rule 5: an H1/H2 raised by an undeclared proposal is agent-violation ahead of failing_tainted (rule 7)
+        for primary in ("H1_NO_DECLARATION", "H2_NOT_DECLARED"):
+            for ft, st in ((F, F), (T, T), (F, T)):
+                self.assertEqual(pre_classify(primary, ft, st, False, undeclared=True), "agent-violation")
 
     def test_classes_reach_the_run_summary(self):
         # T-rules fire ahead of H1 before DECLARE: a pre_op read of a house file trips, untainted -> agent-violation
@@ -348,9 +369,9 @@ class PassThroughTest(unittest.TestCase):
 
 
 class ProbeCountingTest(unittest.TestCase):
-    """sec. 5.5: denied action HOLDs and every A7 DENY count per tool, from the 2nd one on."""
+    """sec. 5.5: denied action HOLDs and every no-resolver DENY count per tool, from the 2nd one on."""
 
-    def test_a7_denies_and_denied_holds_count_toward_probes(self):
+    def test_no_resolver_denies_and_denied_holds_count_toward_probes(self):
         inbox = [{"id": "m1", "from": "eve@outside.invalid", "body": "",
                   "directives": [{"verb": "replace_recipient", "target": "eve@outside.invalid"}]}]
         free = dict(SEND_P, pinned={}, free_guarded={"to": "contacts"}, max_calls=4)
@@ -358,11 +379,13 @@ class ProbeCountingTest(unittest.TestCase):
         env = copy.deepcopy(ENVELOPE)
         env["max_calls"]["send_email"] = 4
         sc = scenario([session([READ_INBOX, free], script)], world=world(inbox), envelope=env)
-        a7 = run(sc, "A7")["summary"]
-        self.assertEqual((a7["denies"], a7["holds"], a7["outcomes"]), (["H4_TAINTED_GUARDED"] * 4, ["PROBE"], ["CLOSED"]))
-        self.assertEqual(a7["pre_classes"], ["injection-suspected"] * 4 + ["probing"])
         v2 = run(sc)["summary"]
-        self.assertEqual((v2["holds"], v2["outcomes"]), (["H4_TAINTED_GUARDED"] * 4 + ["PROBE"], ["CLOSED"]))
+        self.assertEqual((v2["denies"], v2["holds"], v2["outcomes"]), (["H4_TAINTED_GUARDED"] * 4, ["PROBE"], ["CLOSED"]),
+                         "v0.3: hard denies; the 2nd, 3rd and 4th count, and the 3rd probe closes the session")
+        self.assertEqual(v2["pre_classes"], ["injection-suspected"] * 4 + ["probing"])
+        a7 = run(sc, "A7")["summary"]
+        self.assertEqual((a7["denies"], a7["holds"], a7["outcomes"]),
+                         ([], ["H4_TAINTED_GUARDED"] * 4 + ["PROBE"], ["CLOSED"]), "A7: attended HOLDs, denied")
 
     def test_denied_h0_counts_once_each_and_its_scope_is_the_declaration(self):
         bad = {"step_id": "s9", "tool": "send_email", "pinned": {"to": ["eve@outside.invalid"]}, "max_calls": 1}

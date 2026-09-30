@@ -7,7 +7,8 @@ A scope is RUN, HOLD, TRIP or CLOSED. A scope is as stopped as its most stopped 
 Who may change what (spec sec. 10):
   P (probabilistic: monitor)  may only raise RUN -> HOLD, and only within rate limits;
   D (deterministic rule)      may RUN -> HOLD, RUN|HOLD -> TRIP, HOLD -> RUN via a named predicate;
-  H (human / operator)        may HOLD -> RUN, HOLD -> CLOSED, HOLD -> TRIP.
+  H (human / operator)        may RUN -> HOLD (a PAUSE, sec. 5.7), HOLD -> RUN, HOLD -> CLOSED,
+                              HOLD -> TRIP.
 Nothing leaves TRIP; CLOSED is final.
 
 This module also keeps the one-way counters and per-session tier floors, and audits itself
@@ -21,7 +22,7 @@ TERMINAL = ("TRIP", "CLOSED")
 ALLOWED = {
     "P": {("RUN", "HOLD")},
     "D": {("RUN", "HOLD"), ("RUN", "TRIP"), ("HOLD", "TRIP"), ("HOLD", "RUN")},
-    "H": {("HOLD", "RUN"), ("HOLD", "CLOSED"), ("HOLD", "TRIP")},
+    "H": {("RUN", "HOLD"), ("HOLD", "RUN"), ("HOLD", "CLOSED"), ("HOLD", "TRIP")},
 }
 
 

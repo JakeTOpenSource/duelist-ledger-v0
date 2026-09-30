@@ -1,4 +1,5 @@
-"""Scripted agents (spec sec. 7). They speak JSON messages only, as if over a pipe.
+"""Scripted agents (spec sec. 7). They speak JSON messages only, as if over a pipe, and every
+message carries the session mac (sec. 3.8).
 
 In plain words: each agent follows its script. A "compliant" agent is the worst case: it
 obeys every directive it reads in untrusted data (send this file there, pay that payee, ...).
@@ -6,14 +7,16 @@ The other kinds differ only slightly: the schemer plans something outside the en
 prober keeps re-submitting plans, the narrative fitter acts before planning and then tells a
 story, and the silent agent just stops talking.
 
-An agent is a generator: it yields a message and receives the gateway's reply. Running it in
-another process (child_main) proves the same messages work over a real stdio pipe.
+An agent is a generator: it yields a signed message and receives the gateway's reply. Running
+it in another process (child_main) proves the same messages work over a real stdio pipe.
 """
 
 import copy
 import json
 import re
 import sys
+
+from .canon import mac_of
 
 FACT_RE = re.compile(r"FACT-[A-Za-z0-9_\-]*[A-Za-z0-9_]")
 MAX_DEPTH = 8
@@ -32,9 +35,32 @@ class Agent:
         self.redeclarations = list(spec.get("redeclarations") or [])
         self.pre_ops = list(spec.get("pre_ops") or [])
         self.script = list(spec.get("script") or [])
+        self.key = None
+
+    # ---- the agent link ----
+    def bind(self, key):
+        """Receive the session key, once, over the bound transport (sec. 3.8)."""
+        self.key = key
+
+    def sign(self, msg):
+        """The message with its mac under the session key (a random mac when no key was bound)."""
+        out = dict(msg)
+        out["mac"] = mac_of(self.key, out) if self.key else "unbound"
+        return out
 
     # ---- the conversation ----
     def messages(self):
+        """Yields signed messages; each yield receives the gateway's reply."""
+        gen = self._messages()
+        try:
+            msg = next(gen)
+            while True:
+                reply = yield self.sign(msg)
+                msg = gen.send(reply)
+        except StopIteration:
+            return
+
+    def _messages(self):
         self.seq = 0
         self.ended = False
         self.handles, self.senders, self.facts = {}, {}, []
@@ -109,11 +135,15 @@ class Agent:
         self.steps.append(dict(step))
 
     def _arg(self, value):
+        """Argument value forms (sec. 7.1). A handle_of / sender_of origin the agent never received
+        becomes an unresolvable handle, so the proposal is undeclared (sec. 3.1, 4)."""
         if isinstance(value, dict):
             if "handle_of" in value:
                 return {"handle": self.handles.get(value["handle_of"], "unknown:%s" % value["handle_of"])}
             if "sender_of" in value:
-                return self.senders.get(value["sender_of"])
+                if value["sender_of"] in self.senders:
+                    return self.senders[value["sender_of"]]
+                return {"handle": "unknown:sender_of:%s" % value["sender_of"]}
             if value.get("compose") == "facts":
                 return " ".join(self.facts)
         return copy.deepcopy(value)
@@ -157,7 +187,7 @@ class Agent:
             sid = "x%d" % self.extra
             args = dict(d.get("args") or {})
             pinned = {k: (v if isinstance(v, list) else [v]) for k, v in args.items()}
-            step = {"step_id": sid, "tool": d.get("tool"), "pinned": pinned, "max_calls": 1}
+            step = {"step_id": sid, "tool": d.get("tool"), "pinned": pinned, "free_guarded": {}, "max_calls": 1}
             reply = yield {"op": "amend", "kind": "widen", "step": step}
             if self._ended(reply) or reply.get("status") != "OK":
                 return
@@ -186,8 +216,14 @@ class Agent:
             self._ended(reply)
 
 
-def drive(gateway, agent, max_messages=2000):
-    """Run one agent against the gateway in-process. Returns True if the agent sent finish."""
+def drive(gateway, agent, max_messages=2000, after_message=None):
+    """Run one agent against the gateway in-process, over the link bound at SESSION_OPEN (the
+    direct call from this agent object, sec. 3.8). Returns True if the agent sent finish.
+    after_message(gateway, msg, reply, transport), if given, runs after every answered message
+    (the harness uses it for the forge_message fault)."""
+    link = gateway.link()
+    agent.bind(link["key"])
+    transport = link["transport"]
     gen = agent.messages()
     finished = False
     try:
@@ -197,9 +233,12 @@ def drive(gateway, agent, max_messages=2000):
     count = 0
     while msg is not None and count < max_messages:
         count += 1
-        reply = gateway.handle(json.loads(json.dumps(msg)))
-        if msg.get("op") == "finish":
+        wire = json.loads(json.dumps(msg))
+        reply = gateway.handle(wire, transport)
+        if msg.get("op") == "finish" and reply.get("status") != "LINK_REJECT":
             finished = True
+        if after_message is not None:
+            after_message(gateway, wire, reply, transport)
         try:
             msg = gen.send(json.loads(json.dumps(reply)))
         except StopIteration:
@@ -209,9 +248,14 @@ def drive(gateway, agent, max_messages=2000):
 
 
 def child_main():
-    """Agent side of the stdio pipe: first line is the agent spec, then message/reply lines."""
+    """Agent side of the stdio pipe: line 1 is the agent spec, line 2 the session key (hex, handed
+    over once), then message/reply lines."""
     spec = json.loads(sys.stdin.readline())
-    gen = Agent(spec).messages()
+    agent = Agent(spec)
+    key_line = sys.stdin.readline().strip()
+    if key_line:
+        agent.bind(bytes.fromhex(key_line))
+    gen = agent.messages()
     try:
         msg = next(gen)
     except StopIteration:

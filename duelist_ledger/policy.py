@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 from .canon import H
 
-OVERRIDABLE = ("budgets", "tier3_money", "fuse", "escrow_window", "asset_flows")
+OVERRIDABLE = ("budgets", "tier3_money", "fuse", "escrow_window", "asset_flows", "contain_limit")
 
 
 def load_config(config_dir):
@@ -58,6 +58,16 @@ def domain_of(value):
     if "@" in value:
         return value.rsplit("@", 1)[1].strip().lower() or None
     return None
+
+
+def slot_type(sink, slot):
+    """The declared type of a slot (sec. 3.3): path, url, key, text, address, payee, amount, action."""
+    return ((sink or {}).get("slot_types") or {}).get(slot)
+
+
+def numeric_slots(sink):
+    """The amount-typed slots of a sink (the only slots `{"max": m}` and max_money apply to)."""
+    return [s for s, t in ((sink or {}).get("slot_types") or {}).items() if t == "amount"]
 
 
 def dest_class(value, policy, registries):

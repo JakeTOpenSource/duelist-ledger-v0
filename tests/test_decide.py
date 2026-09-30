@@ -73,11 +73,17 @@ class RuleTableTest(unittest.TestCase):
     def test_H4_tainted_guarded(self):
         free = [step("s1", "send_email", free={"to": "contacts"})]
         d = decide(inputs(args={"to": arg("x@outside.invalid", U_LABEL)}, steps=free))
-        self.assertEqual((d["outcome"], d["primary"], d["failing_tainted"]), ("HOLD", "H4_TAINTED_GUARDED", True))
+        self.assertEqual((d["outcome"], d["primary"], d["failing_tainted"]), ("DENY", "H4_TAINTED_GUARDED", True),
+                         "v0.3: a tainted H4 on an unattended step is a no-resolver DENY")
+        attended = [step("s1", "send_email", free={"to": "contacts"}, attended=True)]
+        d = decide(inputs(args={"to": arg("x@outside.invalid", U_LABEL)}, steps=attended))
+        self.assertEqual((d["outcome"], d["primary"]), ("HOLD", "H4_TAINTED_GUARDED"), "attended: a HOLD")
         d = decide(inputs(args={"to": arg("x@outside.invalid", U_LABEL)}, steps=free, mode="A1"))
         self.assertEqual(d["outcome"], "ESCROW", "A1 disables H4")
         d = decide(pay_inputs(amount=600, context=U_LABEL))
-        self.assertEqual(d["primary"], "H3_PINNED_MISMATCH", "literal carries its own label, not context, in helper")
+        self.assertEqual((d["outcome"], d["primary"]), ("HOLD", "H5_BUDGET_SESSION"),
+                         "600 is over the session share too; the session group's reason is the primary")
+        self.assertIn("H3_PINNED_MISMATCH", d["reasons"], "the literal carries its own (P) label in the helper: H3, untainted")
 
     def test_H9_verbatim_selection(self):
         free = [step("s1", "send_email", free={"to": "contacts"})]
@@ -127,12 +133,23 @@ class RuleTableTest(unittest.TestCase):
         self.assertEqual(decide(inputs(args={"to": arg("bob@partner.invalid")}, steps=free, payload_label=other))["outcome"],
                          "ESCROW", "an asset with no flow entry may flow anywhere")
 
-    def test_A7_strict(self):
+    def test_A7_attended(self):
         free = [step("s1", "send_email", free={"to": "contacts"})]
         d = decide(inputs(args={"to": arg("x@outside.invalid", U_LABEL)}, steps=free, mode="A7"))
-        self.assertEqual((d["outcome"], d["primary"]), ("DENY", "H4_TAINTED_GUARDED"))
+        self.assertEqual((d["outcome"], d["primary"]), ("HOLD", "H4_TAINTED_GUARDED"),
+                         "A7 treats every step as attended: a HOLD (repin only), the v0.2 default")
+        for mode in ("V2", "A1", "A4", "A5", "R2"):
+            d = decide(inputs(args={"to": arg("zed@partner.invalid", U_LABEL)}, mode=mode))
+            self.assertEqual(d["outcome"], "DENY", "tainted pinned mismatch is hard-denied in %s" % mode)
         d = decide(inputs(args={"to": arg("bob@x.invalid")}, mode="A7"))
         self.assertEqual(d["outcome"], "HOLD", "untainted H3 stays a HOLD in A7")
+
+    def test_hard_deny_primary_follows_group_order(self):
+        held = {"L3:org": "HOLD", "L2:agent->gate": "RUN"}
+        d = decide(inputs(args={"to": arg("zed@partner.invalid", U_LABEL)}, scope_states=held))
+        self.assertEqual((d["outcome"], d["primary"], d["scope"]), ("DENY", "S0_SCOPE_HELD", "L3"),
+                         "[S0, tainted H3] gives a DENY with primary S0 (sec. 4)")
+        self.assertEqual(d["reasons"], ["S0_SCOPE_HELD", "H3_PINNED_MISMATCH"])
 
     def test_tier(self):
         self.assertEqual(decide(pay_inputs(amount=50))["tier"], 2)
@@ -148,9 +165,66 @@ class RuleTableTest(unittest.TestCase):
         d = decide(inputs("persist_memory", args=args, step_id="nope", steps=[step("s1", "persist_memory", {"key": ["k"]})],
                           payload_label=U_LABEL))
         self.assertEqual(d["reasons"], ["H2_NOT_DECLARED", "H6_PERSIST_AFTER_TAINT"])
-        args = {"to": arg("house/x"), "attach": arg("docs/a")}
+        args = {"to": arg("bob@partner.invalid"), "attach": arg("house/x")}
         d = decide(inputs(args=args, payload_text="CANARY-01", canaries=[{"token": "CANARY-01", "audience": []}]))
         self.assertEqual(d["primary"], "T1_HOUSE", "first T-rule wins")
+
+    def test_T1_scans_path_typed_values_only(self):
+        # sec. 3.3, 17: a house prefix in a text-typed value (body) never trips; in a path-typed value it does
+        d = decide(inputs(args={"to": arg(PRINCIPAL), "body": arg("see house/ledger.jsonl")}))
+        self.assertEqual(d["outcome"], "ESCROW")
+        d = decide(inputs(args={"to": arg(PRINCIPAL), "body": arg("x"), "attach": arg("config/policy.json")}))
+        self.assertEqual((d["outcome"], d["primary"]), ("TRIP", "T1_HOUSE"))
+        d = decide(inputs(args={"to": arg("witness/heads.jsonl")}))
+        self.assertNotEqual(d["primary"], "T1_HOUSE", "an address-typed slot is not scanned")
+        d = decide(inputs("write_workspace", args={"path": arg("notes/a.txt"), "content": arg("house/x")},
+                          steps=[step("s1", "write_workspace", {"path": ["notes/a.txt"]})]))
+        self.assertEqual(d["outcome"], "ALLOW", "content is text-typed")
+        d = decide(inputs("write_workspace", args={"path": arg("house/x"), "content": arg("c")},
+                          steps=[step("s1", "write_workspace", {"path": ["house/x"]})]))
+        self.assertEqual(d["primary"], "T1_HOUSE")
+
+    def test_derived_slot(self):
+        steps = [step("s1", "read_inbox"), step("s2", "send_email", derived={"to": {"sender_of": "s1"}})]
+        senders = {"s1": ["bob@partner.invalid", "carol@partner.invalid"]}
+        d = decide(inputs(args={"to": arg("carol@partner.invalid", U_LABEL)}, steps=steps, step_id="s2",
+                          delivered_senders=senders))
+        self.assertEqual(d["outcome"], "ESCROW", "equals a recorded sender of the named read step")
+        d = decide(inputs(args={"to": arg("eve@outside.invalid", U_LABEL)}, steps=steps, step_id="s2",
+                          delivered_senders=senders))
+        self.assertEqual((d["outcome"], d["primary"], d["failing_slot"], d["failing_tainted"]),
+                         ("DENY", "H3_PINNED_MISMATCH", "to", True), "otherwise H3 with the argument's taint")
+        d = decide(inputs(args={"to": arg("eve@outside.invalid")}, steps=steps, step_id="s2", delivered_senders=senders))
+        self.assertEqual((d["outcome"], d["primary"], d["failing_tainted"]), ("HOLD", "H3_PINNED_MISMATCH", False))
+        d = decide(inputs(args={"to": arg("carol@partner.invalid", U_LABEL)}, steps=steps, step_id="s2",
+                          delivered_senders={"s1": ["bob@partner.invalid"]}))
+        self.assertEqual(d["primary"], "H3_PINNED_MISMATCH", "a sender another step delivered does not count")
+
+    def test_undeclared_proposals(self):
+        # an unknown tool: H1 before DECLARE, H2 after; tier 0, no debits, no slot
+        d = decide(inputs("bogus", args={"x": arg("v")}, declaration=None))
+        self.assertEqual((d["outcome"], d["primary"], d["tier"], d["debits"], d["failing_slot"]),
+                         ("HOLD", "H1_NO_DECLARATION", 0, [], None))
+        self.assertTrue(d["undeclared"])
+        d = decide(inputs("bogus", args={"x": arg("v")}))
+        self.assertEqual((d["outcome"], d["reasons"]), ("HOLD", ["H2_NOT_DECLARED"]))
+        # an unresolvable handle: H2 names the first guarded slot (sinks order) whose handle is unresolvable
+        bad = {"value": None, "label": copy.deepcopy(P_LABEL), "handle": "h9", "unresolvable": True}
+        d = decide(inputs(args={"to": bad, "body": arg("x")}, scope_states={"L3:org": "HOLD"},
+                          counters={"send:home.invalid": 9}))
+        self.assertEqual((d["reasons"], d["failing_slot"], d["failing_tainted"]), (["H2_NOT_DECLARED"], "to", False),
+                         "no other rule runs: no S0, no H5")
+        tainted_bad = dict(bad, label=copy.deepcopy(U_LABEL))  # the gateway gives it the (tainted) context label
+        d = decide(inputs(args={"to": tainted_bad, "body": arg("x")}, context=U_LABEL))
+        self.assertEqual(d["failing_tainted"], True, "the null value carries the context label")
+        # T1 over the literal values and T2 over the literal content still fire first
+        d = decide(inputs(args={"to": bad, "attach": arg("house/ledger.jsonl")}))
+        self.assertEqual(d["primary"], "T1_HOUSE")
+        can = [{"token": "CANARY-01", "audience": [PRINCIPAL]}]
+        d = decide(inputs(args={"to": bad, "body": arg("CANARY-01")}, canaries=can))
+        self.assertEqual(d["primary"], "T2_CANARY", "a null destination is in no audience")
+        d = decide(inputs("bogus", args={"x": arg("house/x")}, declaration=None))
+        self.assertEqual(d["primary"], "T1_HOUSE", "unknown tool: every literal value is scanned")
 
     def test_debits(self):
         d = decide(pay_inputs(amount=80))
@@ -169,8 +243,12 @@ def random_inputs(rng):
     steps = [step("s1", rng.choice(["send_email", "pay", tool]),
                   pinned={"to": [PRINCIPAL]} if rng.random() < 0.5 else {},
                   free={"payee": "vendors", "amount": {"max": 100}, "to": "contacts"},
-                  used=rng.randint(0, 1))]
+                  used=rng.randint(0, 1), attended=rng.random() < 0.3,
+                  derived={"to": {"sender_of": "s0"}} if rng.random() < 0.2 else None)]
+    if rng.random() < 0.15:
+        args[rng.choice(list(args))] = {"value": None, "label": lab(), "handle": "h9", "unresolvable": True}
     return inputs(tool, args=args, steps=steps, step_id=rng.choice(["s1", None, "s9"]),
+                  delivered_senders={"s0": ["a@partner.invalid"]} if rng.random() < 0.5 else {},
                   mode=rng.choice(["V2", "A1", "A4", "A5", "A7", "R2"]),
                   payload_label=lab(), payload_text=rng.choice(["", "CANARY-01", "FACT-1"]),
                   canaries=[{"token": "CANARY-01", "audience": [PRINCIPAL]}],

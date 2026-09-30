@@ -2,9 +2,10 @@
 
 In plain words: for each run it builds a fresh "house" (diary, witness, counters, strikes)
 shared only by that scenario's sessions, a fresh simulated world, the scripted principal
-and monitor, and plays each session's scripted agent against the gateway. It wires in the
-fault hooks (dropped receipts, bypass writes, diary tampering, escrow mutation), then
-collects the summary fields that the sealed expectations are compared against.
+and monitor, and plays each session's scripted agent against the gateway over the bound
+agent link. It wires in the fault hooks (dropped receipts, bypass writes, diary tampering,
+escrow mutation, forged messages, forged tokens), then collects the summary fields that the
+sealed expectations are compared against (sec. 14).
 """
 
 import copy
@@ -13,10 +14,12 @@ import json
 import os
 import random
 import re
+import secrets
 import shutil
 
 from . import labels as L
 from .agents import Agent, drive
+from .canon import mac_of
 from .gateway import Gateway
 from .ledger import tamper_edit, tamper_rehash, verify as verify_ledger
 from .monitor import Monitor
@@ -28,8 +31,9 @@ from .world import World
 
 MODES = ("V2", "A0", "A1", "A3", "A4", "A5", "A7")
 STRICT_INVARIANT_MODES = ("V2", "A1", "A4", "A5", "A7", "R2")
-INDEXED_FAULTS = ("drop_receipt", "mutate_escrow")
+INDEXED_FAULTS = ("drop_receipt", "mutate_escrow", "forge_token")
 TAMPERS = ("tamper_ledger", "tamper_ledger_rehash")
+FORGE_FIELDS = ("audience", "envelope", "nonce_reuse", "expiry", "signature")
 MISSING = "<missing>"
 
 
@@ -48,8 +52,9 @@ def fault_index(fault):
 
 
 def check_scenario(scenario):
-    """Raise ScenarioLoadError for a fault index k < 1 (indices are 1-based) or a mutate_escrow
-    without its required `to`."""
+    """Raise ScenarioLoadError for a fault index k < 1 (indices are 1-based), a mutate_escrow
+    without its required `to`, a forge_token with an unknown `field`, or a forge_message without
+    an integer `after_seq`."""
     sid = scenario.get("id")
     for n, fault in enumerate(scenario.get("faults") or [], 1):
         if not isinstance(fault, dict):
@@ -62,6 +67,13 @@ def check_scenario(scenario):
                                         "(k >= 1)" % (sid, n, kind, fault.get("index")))
         if kind == "mutate_escrow" and "to" not in fault:
             raise ScenarioLoadError("scenario %s: fault %d (mutate_escrow) has no `to`" % (sid, n))
+        if kind == "forge_token" and fault.get("field") not in FORGE_FIELDS:
+            raise ScenarioLoadError("scenario %s: fault %d (forge_token) field %r is not one of %s"
+                                    % (sid, n, fault.get("field"), ", ".join(FORGE_FIELDS)))
+        if kind == "forge_message":
+            a = fault.get("after_seq")
+            if isinstance(a, bool) or not isinstance(a, int):
+                raise ScenarioLoadError("scenario %s: fault %d (forge_message) needs an integer after_seq" % (sid, n))
     return scenario
 
 
@@ -136,7 +148,7 @@ def _num(v):
 
 
 def _fault_detected(n, fault, gw, world, fired):
-    """Did fault number n produce its own signal? A fault that never fired produced none."""
+    """Did fault number n produce its own signal (sec. 14)? A fault that never fired produced none."""
     kind = fault.get("type")
     if kind == "drop_receipt":
         return world.dropped.get(n) in gw.gap_reported
@@ -146,16 +158,46 @@ def _fault_detected(n, fault, gw, world, fired):
         return n in fired and gw.chain_held
     if kind == "mutate_escrow":
         return fired.get(n) in gw.t4_items
+    if kind == "forge_token":
+        return fired.get(n) in gw.t5_items
+    if kind == "forge_message":
+        return n in fired and fired[n] in gw.link_rejects
     return False
+
+
+def forge_token(gw, item, field):
+    """Alter one field of an escrow item's token (sec. 8). Every field but `signature` is re-signed
+    with the gate's signer, as a key-holder could, so the receiver refuses it for that field.
+    Returns False when the fault cannot fire (nonce_reuse with no released item of the class)."""
+    token = dict(item["token"])
+    if field == "audience":
+        token["audience"] = "world:other"
+    elif field == "envelope":
+        token["envelope_commit"] = "sha256:" + "f" * 64
+    elif field == "expiry":
+        token["expires_t"] = -1
+    elif field == "nonce_reuse":
+        released = [i for i in gw.released if i["sink_class"] == item["sink_class"]]
+        if not released:
+            return False
+        token["nonce"] = released[-1]["token"]["nonce"]
+    elif field == "signature":
+        token["sig"] = "00" * 32
+        item["token"] = token
+        return True
+    else:
+        return False
+    item["token"] = gw.sign_token(token)
+    return True
 
 
 def run_one(scenario, mode, variant, run_dir, base_policy, sinks, keep=False, driver=None, inspect=None):
     """Run one scenario x mode x variant. Returns a result record (summary + checks).
 
-    driver(gateway, agent_spec) plays one session; the default runs the agent in-process.
-    inspect(gateway, world), if given, is called after the run (tests use it).
+    driver(gateway, agent_spec, after_message) plays one session; the default runs the agent
+    in-process over the bound link. inspect(gateway, world), if given, is called after the run.
     """
-    driver = driver or (lambda gw, spec: drive(gw, Agent(spec)))
+    driver = driver or (lambda gw, spec, after: drive(gw, Agent(spec), after_message=after))
     sc = check_scenario(make_variant(check_scenario(scenario), variant))
     policy, ignored = effective_policy(base_policy, sc.get("policy_overrides"))
     faults = list(sc.get("faults") or [])
@@ -170,8 +212,8 @@ def run_one(scenario, mode, variant, run_dir, base_policy, sinks, keep=False, dr
             tracker["ever"] = True
 
     world.listeners.append(watch)
-    fired = {}  # fault number -> what it hit (bypass effect id, mutated stage id, or True for a tamper)
-    escrowed = {"n": 0}
+    fired = {}  # fault number -> what it hit (bypass effect id, stage id, (session, seq), or True)
+    current = {"index": 0}
 
     def after_anchor(gw):
         """A tamper edits its entry right after the first anchor whose seq >= entry_seq."""
@@ -190,9 +232,8 @@ def run_one(scenario, mode, variant, run_dir, base_policy, sinks, keep=False, dr
     def on_escrow(gw, item):
         """mutate_escrow{index: k, to}: set the dest slot of the k-th escrowed item (counted across
         the scenario) to exactly `to`, before it is released."""
-        escrowed["n"] += 1
         for n, f in enumerate(faults):
-            if f.get("type") != "mutate_escrow" or fault_index(f) != escrowed["n"]:
+            if f.get("type") != "mutate_escrow" or fault_index(f) != item["n"]:
                 continue
             sink = gw.sinks[item["tool"]]
             slot = sink.get("dest_slot") or (sink.get("guarded") or [None])[0]
@@ -202,22 +243,51 @@ def run_one(scenario, mode, variant, run_dir, base_policy, sinks, keep=False, dr
             item["args"][slot] = dict(old, value=copy.deepcopy(f["to"]))
             fired[n] = item["stage_id"]
 
+    def before_release(gw, item):
+        """forge_token{index: k, field}: alter that field of the k-th escrowed item's token."""
+        for n, f in enumerate(faults):
+            if f.get("type") != "forge_token" or fault_index(f) != item["n"] or n in fired:
+                continue
+            if forge_token(gw, item, f.get("field")):
+                fired[n] = item["stage_id"]
+
+    def after_message(gw, msg, reply, transport):
+        """forge_message{session?, after_seq}: right after that proposal is answered, inject one
+        copy of it with seq + 1 and a mac under a random key (its signal is LINK_REJECT)."""
+        if not (isinstance(msg, dict) and msg.get("op") == "propose"):
+            return
+        for n, f in enumerate(faults):
+            if f.get("type") != "forge_message" or n in fired or f.get("session", 0) != current["index"]:
+                continue
+            if msg.get("seq") != f.get("after_seq"):
+                continue
+            forged = dict(msg, seq=msg["seq"] + 1)
+            forged["mac"] = mac_of(secrets.token_bytes(32), forged)
+            sid = gw.session.sid if gw.session else None
+            gw.handle(forged, transport)
+            fired[n] = (sid, forged["seq"])
+
     principal = Principal(sc.get("principal_policy"), rubber_stamp=(mode == "A5"))
     gw = Gateway(run_dir, policy, sinks, world, principal, mode=mode, monitor=Monitor(sc.get("monitor")),
-                 hooks={"after_anchor": after_anchor, "on_escrow": on_escrow})
+                 hooks={"after_anchor": after_anchor, "on_escrow": on_escrow, "before_release": before_release})
     first_identity = None
     for i, sess in enumerate(sc.get("sessions") or []):
+        current["index"] = i
         spec = sess.get("agent") or {}
         identity = spec.get("identity", "agent")
         first_identity = identity if first_identity is None else first_identity
         envelope = sess.get("envelope", sc.get("envelope"))
-        opened = gw.open_session("s%d" % (i + 1), sess.get("task", ""), identity, envelope)
-        for n, f in enumerate(faults):
-            if f.get("type") == "bypass_write" and f.get("session", 0) == i:
-                fired[n] = "bypass-%d" % (n + 1)
-                world.bypass_email(f.get("effect") or {}, fired[n])
+
+        def bypass(gw, i=i):
+            """bypass_write right after SESSION_OPEN of its session (a refused session included)."""
+            for n, f in enumerate(faults):
+                if f.get("type") == "bypass_write" and f.get("session", 0) == i:
+                    fired[n] = "bypass-%d" % (n + 1)
+                    world.bypass(f.get("effect") or {}, fired[n])
+
+        opened = gw.open_session("s%d" % (i + 1), sess.get("task", ""), identity, envelope, after_open=bypass)
         if opened:
-            driver(gw, spec)
+            driver(gw, spec, after_message)
     gw.finish_scenario()
     gw.close()
     world.close()
@@ -263,6 +333,8 @@ def run_one(scenario, mode, variant, run_dir, base_policy, sinks, keep=False, dr
         "proposals": gw.proposals, "latencies": gw.latencies,
         "alarms": list(gw.alarms), "ignored_overrides": ignored,
         "chain_detected_seq": gw.chain_detected_seq,
+        "link_rejects": len(gw.link_rejects), "refusals": list(world.refusals),
+        "signatures": gw.signer.scheme,
     }
     if inspect is not None:
         inspect(gw, world)

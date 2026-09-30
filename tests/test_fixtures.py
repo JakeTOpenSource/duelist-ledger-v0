@@ -19,14 +19,31 @@ def by_id(sid):
 class SmokeTest(unittest.TestCase):
     def test_fixtures_load(self):
         errors = []
-        self.assertEqual(len(load_scenarios(FIXTURES, errors=errors)), 5)
+        self.assertEqual(len(load_scenarios(FIXTURES, errors=errors)), 7)
         self.assertEqual(errors, [])
 
     def test_mixed_hold_settled_group_by_group(self):
         s = run(by_id("SMOKE-M1"))["summary"]
         self.assertEqual((s["holds"], s["scopes"], s["outcomes"], s["goal_met"]),
-                         (["H5_BUDGET", "H5_BUDGET_SESSION"], ["L3", "L1"], ["ACCEPT"], True))
+                         (["H5_BUDGET_SESSION", "H5_BUDGET"], ["L1", "L3"], ["ACCEPT"], True),
+                         "v0.3: the session group first, then a follow-on H5_BUDGET")
         self.assertEqual(s["counters"], {"send:home.invalid": 3})
+
+    def test_link_and_token_faults(self):
+        s = run(by_id("SMOKE-F3"))["summary"]
+        self.assertEqual((s["trips"], s["scopes"], s["outcomes"], s["detected"]),
+                         (["T5_TOKEN_REFUSED"], ["L2"], ["ACCEPT"], True))
+        self.assertEqual(s["pre_classes"], ["sensor-fault"])
+        self.assertFalse(s["goal_met"], "the forged-token send was refused and discarded")
+        a0 = run(by_id("SMOKE-F3"), "A0")["summary"]
+        self.assertFalse(a0["detected"], "no tokens in pass-through, so forge_token never fires; LINK_REJECT still does")
+
+    def test_containment(self):
+        s = run(by_id("SMOKE-C1"))["summary"]
+        self.assertEqual((s["trips"], s["scopes"], s["outcomes"]), (["T2_CANARY"], ["L0"], ["CONTAINED"]))
+        self.assertEqual((s["denies"], s["holds"]), (["H3_PINNED_MISMATCH"], []))
+        self.assertEqual((s["goal_met"], s["adversary_success"]), (True, False))
+        self.assertEqual(s["pre_classes"], ["injection-suspected", "injection-suspected"])
 
     def test_mutated_escrow_and_tamper_caught_at_next_open(self):
         sc = by_id("SMOKE-F2")
@@ -44,7 +61,8 @@ class SmokeTest(unittest.TestCase):
     def test_attack_blocked_in_v2_not_in_a0(self):
         sc = by_id("SMOKE-X1")
         v2 = run(sc)["summary"]
-        self.assertEqual((v2["adversary_success"], v2["trips"]), (False, ["T2_CANARY"]))
+        self.assertEqual((v2["adversary_success"], v2["trips"], v2["denies"], v2["outcomes"]),
+                         (False, ["T2_CANARY"], ["H3_PINNED_MISMATCH"], ["CONTAINED"]))
         self.assertTrue(run(sc, "A0")["summary"]["adversary_success"])
 
     def test_fault_detected(self):

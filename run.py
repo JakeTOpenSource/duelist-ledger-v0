@@ -1,13 +1,13 @@
-"""One command for the whole Duelist Ledger v0 run (contract v0.1).
+"""One command for the whole Duelist Ledger v0 run (contract v0.3).
 
 In plain words:
   py -3.14 run.py                         runs the unit tests, then every scenario in
-                                          scenarios/v0.1/ (else scenarios/, else the smoke
+                                          scenarios/v0.3/ (else scenarios/, else the smoke
                                           fixtures in tests/fixtures), and writes out/report.md.
   py -3.14 run.py --scenarios <dir>       same, on another scenario folder.
   py -3.14 run.py --scenarios <dir> --reveal <expectations.json> --salt <salt.txt>
                                           first checks the seal (default
-                                          sealed/v0.1/expectations.seal.json, or --seal <path>);
+                                          sealed/v0.3/expectations.seal.json, or --seal <path>);
                                           stops at once if it does not match; otherwise also
                                           compares every sealed expectation and lists mismatches.
   py -3.14 run.py --subprocess            also runs one demo session over a real stdio pipe.
@@ -33,7 +33,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from duelist_ledger import CAVEAT, CONTRACT, CONTRACT_DIR  # noqa: E402
+from duelist_ledger import CAVEAT, CONTRACT, CONTRACT_DIR, SIGNATURES_RAN  # noqa: E402
 from duelist_ledger.harness import (STRICT_INVARIANT_MODES, compare, load_scenarios, modes_for,  # noqa: E402
                                     run_one, variant_count)
 from duelist_ledger.metrics import compute  # noqa: E402
@@ -50,13 +50,16 @@ def run_unit_tests():
             "errors": len(result.errors), "skipped": False, "output_tail": stream.getvalue()[-4000:]}
 
 
-def pipe_driver(gw, spec):
-    """Play one session with the agent in a child process, over stdin/stdout JSON lines."""
+def pipe_driver(gw, spec, after_message=None):
+    """Play one session with the agent in a child process, over stdin/stdout JSON lines. The
+    pipe is the bound transport: the session key goes down it once, right after the spec."""
     env = dict(os.environ, PYTHONUTF8="1")
     proc = subprocess.Popen([sys.executable, os.path.join(ROOT, "run.py"), "--agent-child"],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                             encoding="utf-8", env=env)
+    link = gw.link()
     proc.stdin.write(json.dumps(spec) + "\n")
+    proc.stdin.write(link["key"].hex() + "\n")
     proc.stdin.flush()
     finished = False
     count = 0
@@ -66,9 +69,11 @@ def pipe_driver(gw, spec):
             break
         count += 1
         msg = json.loads(line)
-        reply = gw.handle(msg)
-        if isinstance(msg, dict) and msg.get("op") == "finish":
+        reply = gw.handle(msg, link["transport"])
+        if isinstance(msg, dict) and msg.get("op") == "finish" and reply.get("status") != "LINK_REJECT":
             finished = True
+        if after_message is not None:
+            after_message(gw, msg, reply, link["transport"])
         try:
             proc.stdin.write(json.dumps(reply) + "\n")
             proc.stdin.flush()
@@ -159,7 +164,7 @@ def main(argv=None):
 
     print(CAVEAT)
     print()
-    print("Contract v%s" % CONTRACT)
+    print("Contract v%s; signatures: %s" % (CONTRACT, SIGNATURES_RAN))
     started = time.perf_counter()
     expectations, seal_info = None, {"status": "not requested"}
     if args.reveal or args.salt:
@@ -217,7 +222,8 @@ def main(argv=None):
         mismatches, match = expectation_diff(expectations, scenarios, results, load_errors)
     exit_code = 0 if tests["ok"] and strict_viol == 0 else 1
     payload = {
-        "caveat": CAVEAT, "contract": CONTRACT, "unit_tests": tests, "seal": seal_info, "scenario_dir": scen_dir,
+        "caveat": CAVEAT, "contract": CONTRACT, "signatures": SIGNATURES_RAN,
+        "unit_tests": tests, "seal": seal_info, "scenario_dir": scen_dir,
         "scenario_count": len(scenarios), "load_errors": load_errors, "runs": results, "metrics": compute(results),
         "strict_invariant_violations": strict_viol, "mismatches": mismatches,
         "expectation_match": match, "subprocess_demo": demo, "exit_code": exit_code,

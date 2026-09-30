@@ -9,6 +9,7 @@ import shutil
 import tempfile
 
 from duelist_ledger import labels as L
+from duelist_ledger.canon import mac_of
 from duelist_ledger.harness import run_one
 from duelist_ledger.policy import load_config
 
@@ -25,9 +26,17 @@ def arg(value, label=None):
     return {"value": value, "label": copy.deepcopy(label or P_LABEL)}
 
 
-def step(step_id, tool, pinned=None, free=None, max_calls=1, used=0):
+def step(step_id, tool, pinned=None, free=None, max_calls=1, used=0, attended=False, derived=None):
     return {"step_id": step_id, "tool": tool, "pinned": pinned or {}, "free_guarded": free or {},
-            "max_calls": max_calls, "used": used}
+            "derived": derived or {}, "attended": attended, "max_calls": max_calls, "used": used}
+
+
+def send(gw, msg):
+    """Send one message to the gateway the way the agent does: over the bound transport, with the
+    session mac (tests that drive a Gateway by hand use this)."""
+    link = gw.link()
+    signed = dict(msg, mac=mac_of(link["key"], msg))
+    return gw.handle(signed, link["transport"])
 
 
 def inputs(tool="send_email", args=None, steps=None, step_id="s1", mode="V2", payload_label=None,
@@ -47,7 +56,7 @@ def inputs(tool="send_email", args=None, steps=None, step_id="s1", mode="V2", pa
         "context_label": context or copy.deepcopy(P_LABEL), "session_tainted": False,
         "scope_states": {"L3:org": "RUN", "L2:agent->gate": "RUN"},
         "counters": {}, "session_counters": {}, "fuse_state": {}, "tier_floor": 0, "t": 1,
-        "untrusted_strings": [], "rules_enabled": {"R1": False},
+        "untrusted_strings": [], "delivered_senders": {}, "rules_enabled": {"R1": False},
     }
     base.update(extra)
     return base
