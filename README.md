@@ -27,6 +27,7 @@ Any success-rate number in `out/report.md` is measured against the project's own
 - **Classification v0.1:** 1 spec ambiguity (C4: the `bypass_write` effect schema, which explains all 35 mismatches), 0 expectation errors, 0 scenario bugs, and 1 pre-registered gate bug (G1) that the suite never exercised. Six clauses matched only because both tracks assumed the same unpinned reading. See `docs/CONTRADICTIONS.md`. Author decisions for v0.2 are listed there.
 - **Contract v0.2** (amendment A3, post-reveal): resolves every v0.1 finding, pins Track B's readings, adds five plan scenarios and an entry-path coverage rule, and strengthens the protocol (known-nonconformance pre-registration, prompts are not contract, cross-family Track B). Audited pre-seal. Tag `contract-v0.2` (`4cb7354`). No run was sealed under v0.2.
 - **Contract v0.3** (amendment A4, design): the keyed agent link, receiver-verified Ed25519 effect tokens, typed slots, containment instead of session death for tainted trips, hard deny of tainted destinations with a declaration-time allowlist (A7 becomes the attended ablation), PAUSE (deferred), the attacker-triggered-restriction residual, and house-local labels with a cross-house interface. Eight new plan scenarios. Tag `contract-v0.3` (`431a14a`). The next blind two-track run is on v0.3.
+- **Track A v0.3 sealed:** 57 scenarios with hand-derived expectations, on Fable 5.1; seal `sha256:8bc27754…77b37e2`, published before Track B starts.
 
 ## Quickstart
 
