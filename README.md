@@ -28,8 +28,12 @@ Any success-rate number in `out/report.md` is measured against the project's own
 - **Contract v0.2** (amendment A3, post-reveal): resolves every v0.1 finding, pins Track B's readings, adds five plan scenarios and an entry-path coverage rule, and strengthens the protocol (known-nonconformance pre-registration, prompts are not contract, cross-family Track B). Audited pre-seal. Tag `contract-v0.2` (`4cb7354`). No run was sealed under v0.2.
 - **Contract v0.3** (amendment A4, design): the keyed agent link, receiver-verified Ed25519 effect tokens, typed slots, containment instead of session death for tainted trips, hard deny of tainted destinations with a declaration-time allowlist (A7 becomes the attended ablation), PAUSE (deferred), the attacker-triggered-restriction residual, and house-local labels with a cross-house interface. Eight new plan scenarios. Tag `contract-v0.3` (`431a14a`). The next blind two-track run is on v0.3.
 - **Track A v0.3 sealed:** 57 scenarios with hand-derived expectations, on Fable 5.1; seal `sha256:8bc27754…77b37e2`, published before Track B starts.
-- **Track B v0.3 implementation:** this commit, built blind from the contract at `contract-v0.3` on Fable 5.1 (the same model as Track A, so same-model evidence; no other-family assistant was available). Committed before the reveal, with four nonconformances pre-registered in `docs/PROTOCOL_LOG.md`. Signatures are HMAC stand-ins in this build.
-- **Reveal v0.3:** pending.
+- **Track B v0.3 implementation:** `f27c5bd`, built blind from the contract at `contract-v0.3` on Fable 5.1 (the same model as Track A, so same-model evidence; no other-family assistant was available). Committed before the reveal, with four nonconformances pre-registered in `docs/PROTOCOL_LOG.md`. Signatures are HMAC stand-ins in this build.
+- **Reveal v0.3 (run 1, blind, same-model):** published unedited in `results/v0.3/run1/`.
+  - Seal verified.
+  - 2,005 runs, 4,410/4,410 decisions replayed, 0 invariant violations.
+  - **18,150 / 18,155 expected fields matched (99.97%).** 5 mismatches.
+- **Classification v0.3:** pending, in `docs/CONTRADICTIONS.md`.
 
 ## Quickstart
 
